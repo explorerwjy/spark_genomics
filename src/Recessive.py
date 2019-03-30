@@ -11,10 +11,11 @@ import multiprocessing
 import gzip
 
 class RecessiveModel:
-	def __init__(self, af = 1e-2, SBPV_cutoff=1e-3, DP_cutoff=7, AB_cutoff=0.1):
+	def __init__(self, af = 1e-2, SBPV_cutoff=1e-3, DP_cutoff=7, AB_cutoff1=0.2, AB_cutoff2=0.8):
 		self.SBPV_cutoff = SBPV_cutoff
 		self.DP_cutoff = DP_cutoff
-		self.AB_cutoff = AB_cutoff
+		self.AB_cutoff1 = AB_cutoff1
+		self.AB_cutoff2 = AB_cutoff2
 		self.LGD = set(["splice_acceptor_variant", "splice_donor_variant", "stop_gained", 
 			"stop_lost", "start_lost", "frameshift_variant"])
 		self.CADD_cutoff = 25
@@ -100,7 +101,7 @@ class RecessiveModel:
 				return False
 			if float(tmp["DP"]) < self.DP_cutoff:
 				return False
-			if float(tmp["AD"].split(",")[1])/float(tmp["DP"]) < self.AB_cutoff:
+			if float(tmp["AD"].split(",")[1])/float(tmp["DP"]) < self.AB_cutoff1 or float(tmp["AD"].split(",")[1])/float(tmp["DP"]) < self.AB_cutoff2:
 				return False
 		return [int(i) for i in GT]
 
@@ -356,6 +357,7 @@ class RecessiveModel:
 							Trios[j].mo_haps[Vartype][1] = 0
 						elif Trios[j].mo_haps[Vartype][0] == 0:
 							Trios[j].mo_haps[Vartype][1] = 1
+
 class Sample:
 	def __init__(self, row):
 		#self.FamID = row["FamID"]
