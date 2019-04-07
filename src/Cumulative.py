@@ -160,18 +160,14 @@ class RecessiveModel:
 		Genes, Transtripts = LoadGeneCode(GenecodeFil)
 		CSQ_header = [X.strip().split("Format: ")[1].rstrip('>\"').split("|") for X in VEPFil.header if X.startswith("##INFO=<ID=CSQ")][0]
 		Samples = GenotypeFil.header[-1].split("\t")[9:]
-		OutFil = open("Rec.Chr{}.txt".format(Chr), 'w')
-		OutFil.write("#Gene\t" + "\t".join(["{}.obs\t{}.haps".format(t,t) for t in self.C]) + "\n")
+		OutFil = open("CumF.Chr{}.txt".format(Chr), 'w')
+		OutFil.write("#Gene\t" + "\t".join(["{}.cumf".format(t) for t in self.C]) + "\n")
 		Trios = self.LoadPedigree("a", Samples)
 
 		for i, (Gene,GTF) in enumerate(Genes.items()):
-			for i,trio in enumerate(Trios):
-				#for cat in ["syn","lgd","mis","cadd15","cadd20","cadd25","revel.5"]:
-				for cat in self.C:
-					Trios[i].pro_haps[cat] = [0,0]
-					Trios[i].fa_haps[cat] = [0,0]
-					Trios[i].mo_haps[cat] = [0,0]
-				#Trios[i].pro_haps[lgd/dmis] = [[0,0], [0,0]] # consider lgd/dmis and dmis/lgd seperately and then combine to observed.
+			CumF = {}
+			for t in self.C:
+				CumF[t] = 0
 			start, end = int(GTF.start), int(GTF.end)
 			veps, cohort, genotypes = [],[], []
 			for term in VEPFil.fetch(Chr, start, end):
@@ -190,66 +186,49 @@ class RecessiveModel:
 				infodict = self.getINFO(llist[7])
 				Allele_CSQ_dict = self.match_allele_csq(Ref, Alts, CSQ_header, infodict["CSQ"])
 				for i, Alt in enumerate(Alts.split(",")):
+					Allele_CSQ_dict[Alt][0]["gnomADg_AF_NFE"] = Allele_CSQ_dict[Alt][0]["gnomADg_AF_NFE"].split("&")[0]
+					Allele_CSQ_dict[Alt][0]["gnomADe_AF_NFE"] = Allele_CSQ_dict[Alt][0]["gnomADe_AF_NFE"].split("&")[0]
+					vep = Allele_CSQ_dict[Alt][0]
+					gnomADg_af = 0 if (vep["gnomADg_AF_NFE"] == "" or vep["gnomADg_AF_NFE"] == ".")\
+							else float(vep["gnomADg_AF_NFE"])
+					gnomADe_af = 0 if (vep["gnomADe_AF_NFE"] == "" or vep["gnomADe_AF_NFE"] == ".")\
+							else float(vep["gnomADe_AF_NFE"])
+					af = cohort_af[i]
+					#if gnomADg_af > 1e-2 or af > 1e-2 or af == 0:
+					#if max(gnomADg_af, af) > 1e-2 or af == 0:
+					if max(gnomADg_af, af) > self.AF_cutoff or af == 0:
+						continue
+					cons = Allele_CSQ_dict[Alt][0]["Consequence"]
+					#print (cons)
+					if len(set(cons).intersection(self.LGD))>= 1:
+						#print (gnomADe_af, af, cons)
+						#self.LookUpBiallic(i, "lgd", fmt, Sample_genotypes, Trios)
+						CumF["lgd"] += af
+					if "synonymous_variant" in set(cons):
+						#self.LookUpBiallic(i, "syn", fmt, Sample_genotypes, Trios)
+						CumF["syn"] += af
+					if "missense_variant" in set(cons):
+						#self.LookUpBiallic(i, "mis", fmt, Sample_genotypes, Trios)
+						CumF["mis"] += af
+					if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 15:
+						#self.LookUpBiallic(i, "cadd15", fmt, Sample_genotypes, Trios)
+						CumF["cadd15"] += af
+					if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 20:
+						#self.LookUpBiallic(i, "cadd20", fmt, Sample_genotypes, Trios)
+						CumF["cadd20"] += af
+					if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 25:
+						#self.LookUpBiallic(i, "cadd25", fmt, Sample_genotypes, Trios)
+						CumF["cadd25"] += af
 					try:
-						Allele_CSQ_dict[Alt][0]["gnomADg_AF_NFE"] = Allele_CSQ_dict[Alt][0]["gnomADg_AF_NFE"].split("&")[0]
-						Allele_CSQ_dict[Alt][0]["gnomADe_AF_NFE"] = Allele_CSQ_dict[Alt][0]["gnomADe_AF_NFE"].split("&")[0]
-						vep = Allele_CSQ_dict[Alt][0]
-						gnomADg_af = 0 if (vep["gnomADg_AF_NFE"] == "" or vep["gnomADg_AF_NFE"] == ".")\
-								else float(vep["gnomADg_AF_NFE"])
-						gnomADe_af = 0 if (vep["gnomADe_AF_NFE"] == "" or vep["gnomADe_AF_NFE"] == ".")\
-								else float(vep["gnomADe_AF_NFE"])
-						af = cohort_af[i]
-						#if gnomADg_af > 1e-2 or af > 1e-2 or af == 0:
-						#if max(gnomADg_af, af) > 1e-2 or af == 0:
-						if max(gnomADg_af, af) > self.AF_cutoff or af == 0:
-							continue
-						cons = Allele_CSQ_dict[Alt][0]["Consequence"]
-						#print (cons)
-						if len(set(cons).intersection(self.LGD))>= 1:
-							#print (gnomADe_af, af, cons)
-							self.LookUpBiallic(i, "lgd", fmt, Sample_genotypes, Trios)
-						if "synonymous_variant" in set(cons):
-							self.LookUpBiallic(i, "syn", fmt, Sample_genotypes, Trios)
-						if "missense_variant" in set(cons):
-							self.LookUpBiallic(i, "mis", fmt, Sample_genotypes, Trios)
-						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 15:
-							self.LookUpBiallic(i, "cadd15", fmt, Sample_genotypes, Trios)
-						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 20:
-							self.LookUpBiallic(i, "cadd20", fmt, Sample_genotypes, Trios)
-						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 25:
-							self.LookUpBiallic(i, "cadd25", fmt, Sample_genotypes, Trios)
-						try:
-							if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["REVEL_score"]) > 0.5:
-								self.LookUpBiallic(i, "revel.5", fmt, Sample_genotypes, Trios)
-						except ValueError:
-							continue
+						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["REVEL_score"]) > 0.5:
+							#self.LookUpBiallic(i, "revel.5", fmt, Sample_genotypes, Trios)
+							CumF["revel.5"] += af
+					except ValueError:
+						continue
 						#if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0][""CADD_PHRED""]) > 20 or (len(set(cons).intersection(self.LGD))>= 1):
 						#	self.LookUpBiallicLGD_DMIS(i, "lgd/dmis", fmt, Sample_genotypes, Trios)
-					except KeyError as e:
-						print(e)
-						print("KeyError", Ref, Alts, Alt, Allele_CSQ_dict)
-						return
-					except IndexError:
-						print("IndexError", Ref, Alts, llist[7], Allele_CSQ_dict)
-						return
-			Obs = {}
-			Nhaps = {}
-			for t in self.C:
-				Obs[t] = 0
-				Nhaps[t] = 0
-			for i,trio in enumerate(Trios):
-				for t in self.C:
-					#print(Trios[i].pro_haps[t])
-					if Trios[i].pro_haps[t] == [1,1]:
-						Obs[t] += 1
-					Nhaps[t] += sum(Trios[i].fa_haps[t])
-					Nhaps[t] += sum(Trios[i].mo_haps[t])
-					#else:
-					#	print(Trios[i].pro_haps[t])
-					#if Trios[i].pro_haps[t] == [1,1]:
-					#	Mix += 1
 			#OutFil.write("{}\t{}\t{}\n".format(Gene, "\t".join("{}\t{}".format(Obs[t], Nhaps[t]) for t in self.C), Mix))
-			OutFil.write("{}\t{}\n".format(Gene, "\t".join("{}\t{}".format(Obs[t], Nhaps[t]) for t in self.C)))
+			OutFil.write("{}\t{}\n".format(Gene, "\t".join("{}".format(CumF[t]) for t in self.C)))
 
 		return
 	def LookUpBiallic(self, i, Vartype, fmt, gts, Trios):

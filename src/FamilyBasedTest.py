@@ -101,7 +101,7 @@ class RecessiveModel:
 				return False
 			if float(tmp["DP"]) < self.DP_cutoff:
 				return False
-			if float(tmp["AD"].split(",")[1])/float(tmp["DP"]) < self.AB_cutoff1: #or float(tmp["AD"].split(",")[1])/float(tmp["DP"]) > self.AB_cutoff2:
+			if float(tmp["AD"].split(",")[1])/float(tmp["DP"]) < self.AB_cutoff1: # or float(tmp["AD"].split(",")[1])/float(tmp["DP"]) > self.AB_cutoff2:
 				return False
 		return [int(i) for i in GT]
 
@@ -160,17 +160,219 @@ class RecessiveModel:
 		Genes, Transtripts = LoadGeneCode(GenecodeFil)
 		CSQ_header = [X.strip().split("Format: ")[1].rstrip('>\"').split("|") for X in VEPFil.header if X.startswith("##INFO=<ID=CSQ")][0]
 		Samples = GenotypeFil.header[-1].split("\t")[9:]
+		OutFil = open("Rec.FamTest.Chr{}.txt".format(Chr), 'w')
+		OutFil.write("#Gene\t" + "\t".join(["{}.obs\t{}.haps".format(t,t) for t in self.C]) + "\n")
+		OutFil2 = open("Rec.FamTest.Chr{}.sup.txt".format(Chr), 'w')
+		OutFil2.write("#Gene\t" + "\t".join(["{}.NCantPhase\t{}.CantPhaseFams\t{}.N3vars".format(t,t,t) for t in self.C]) + "\n")
+		#OutFil2.write("{}\t{}\t{}\n".format(Gene, "\t".join("{}\t{}\t{}".format(CantPhase[t], CantPhase_fams[t], MoreThanThree[t]) for t in self.C)))
+		Trios = self.LoadPedigree("a", Samples)
+
+		for i, (Gene,GTF) in enumerate(Genes.items()): # iterate through genes
+			#print (i, Gene)
+			Gene_Fam_dat = {}
+			for i,trio in enumerate(Trios):
+				#for cat in ["syn","lgd","mis","cadd15","cadd20","cadd25","revel.5"]:
+				Gene_Fam_dat[trio.FamID] = {}
+				for cat in self.C:
+					Gene_Fam_dat[trio.FamID][cat] = []
+				#Trios[i].pro_haps[lgd/dmis] = [[0,0], [0,0]] # consider lgd/dmis and dmis/lgd seperately and then combine to observed.
+			start, end = int(GTF.start), int(GTF.end)
+			veps, cohort, genotypes = [],[], []
+			for term in VEPFil.fetch(Chr, start, end):
+				veps.append(term)
+			for term in AFFil.fetch(Chr, start, end):
+				cohort.append(term)
+			for term in GenotypeFil.fetch(Chr, start, end):
+				genotypes.append(term)
+			for var in zip(veps, cohort, genotypes):
+				llist = var[0].split("\t")
+				llist2 = var[2].split("\t")
+				Chr, Pos, Ref, Alts = llist[0], llist[1], llist[3], llist[4]
+				cohort_af = list(map(float, self.getINFO(var[1].split("\t")[7])["EUR_AF"].split(",")))
+				fmt = llist2[8]
+				Sample_genotypes = llist2[9:]
+				infodict = self.getINFO(llist[7])
+				Allele_CSQ_dict = self.match_allele_csq(Ref, Alts, CSQ_header, infodict["CSQ"])
+				for i, Alt in enumerate(Alts.split(",")):
+					var_k = "{}:{}:{}:{}".format(Chr, Pos, Ref, Alt)
+					try:
+						Allele_CSQ_dict[Alt][0]["gnomADg_AF_NFE"] = Allele_CSQ_dict[Alt][0]["gnomADg_AF_NFE"].split("&")[0]
+						Allele_CSQ_dict[Alt][0]["gnomADe_AF_NFE"] = Allele_CSQ_dict[Alt][0]["gnomADe_AF_NFE"].split("&")[0]
+						vep = Allele_CSQ_dict[Alt][0]
+						gnomADg_af = 0 if (vep["gnomADg_AF_NFE"] == "" or vep["gnomADg_AF_NFE"] == ".")\
+								else float(vep["gnomADg_AF_NFE"])
+						gnomADe_af = 0 if (vep["gnomADe_AF_NFE"] == "" or vep["gnomADe_AF_NFE"] == ".")\
+								else float(vep["gnomADe_AF_NFE"])
+						af = cohort_af[i]
+						#if gnomADg_af > 1e-2 or af > 1e-2 or af == 0:
+						#if max(gnomADg_af, af) > 1e-2 or af == 0:
+						if max(gnomADg_af, af) > self.AF_cutoff or af == 0:
+							continue
+						cons = Allele_CSQ_dict[Alt][0]["Consequence"]
+						#print (cons)
+						if len(set(cons).intersection(self.LGD))>= 1:
+							#print (gnomADe_af, af, cons)
+							#self.LookUpBiallic(i, "lgd", fmt, Sample_genotypes, Trios)
+							Gene_Fam_dat = self.AddVar(i, var_k, "lgd", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
+						if "synonymous_variant" in set(cons):
+							Gene_Fam_dat = self.AddVar(i, var_k, "syn", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
+						if "missense_variant" in set(cons):
+							Gene_Fam_dat = self.AddVar(i, var_k, "mis", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
+						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 15:
+							Gene_Fam_dat = self.AddVar(i, var_k, "cadd15", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
+						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 20:
+							Gene_Fam_dat = self.AddVar(i, var_k, "cadd20", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
+						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 25:
+							Gene_Fam_dat = self.AddVar(i, var_k, "cadd25", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
+						try:
+							if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["REVEL_score"]) > 0.5:
+								Gene_Fam_dat = self.AddVar(i, var_k, "revel.5", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
+						except ValueError:
+							continue
+					except KeyError as e:
+						print(e)
+						print("KeyError", Ref, Alts, Alt, Allele_CSQ_dict)
+						return
+					except IndexError:
+						print("IndexError", Ref, Alts, llist[7], Allele_CSQ_dict)
+						return
+			res = self.Phasing_N_Count(Gene_Fam_dat, Trios)
+			OBS = {}
+			EXP = {}
+			CantPhase = {}
+			MoreThanThree = {}
+			CantPhase_fams = {}
+			#for t in self.C:
+			#	OBS[t] = 0
+			#	EXP[t] = 0
+			#	CantPhase[t] = 0
+			#	MoreThanThree[t] = 0
+			#	CantPhase_fams[t] = []
+			for t in self.C:
+				OBS[t] = (res[t][0][1] + res[t][1][1])
+				EXP[t] = (res[t][0][0] + res[t][1][0])
+				CantPhase[t] = res[t][2]
+				CantPhase_fams[t] = ",".join(res[t][3])
+				MoreThanThree[t] = res[t][4]
+			OutFil.write("{}\t{}\n".format(Gene, "\t".join("{}\t{}".format(OBS[t], EXP[t]) for t in self.C)))
+			OutFil2.write("{}\t{}\n".format(Gene, "\t".join("{}\t{}\t{}".format(CantPhase[t], CantPhase_fams[t], MoreThanThree[t]) for t in self.C)))
+		return
+
+	def AddVar(self, i, var_k, Vartype, fmt, gts, Trios, Gene_Fam_dat):
+		for j, trio in enumerate(Trios):
+			prob, fa, mo = trio.Proband, trio.Father, trio.Mother
+			gt_prob, gt_fa, gt_mo = self.GenotypeQC(fmt, gts[prob.index]), self.GenotypeQC(fmt, gts[fa.index]), self.GenotypeQC(fmt, gts[mo.index])
+			if gt_prob == False or gt_fa == False or gt_mo == False:
+				continue
+			elif ( (gt_prob[1] not in [0, i+1]) or (gt_fa[1] not in [0, i+1]) or (gt_mo[1] not in [0, i+1]) ) or (gt_prob[1] == 0 and gt_fa[1] == 0 and gt_mo[1] == 0):
+				continue 
+			elif (gt_prob[0] not in gt_fa and gt_prob[1] not in gt_mo) or (gt_prob[1] not in gt_fa and gt_prob[0] not in gt_mo):
+				continue
+			else:
+				gt_prob, gt_fa, gt_mo = self.gt_recode(gt_prob), self.gt_recode(gt_fa), self.gt_recode(gt_mo)
+				Gene_Fam_dat[trio.FamID][Vartype].append([var_k, gt_prob, gt_fa, gt_mo])
+		return Gene_Fam_dat
+	
+	def gt_recode(self, gt):
+		if gt[0] != 0 :
+			gt[0] = 1
+		if gt[1] != 0 :
+			gt[1] = 1
+		return gt
+
+	def Phasing_N_Count(self, Gene_Fam_dat, Trios):
+		res = {}
+		for t in self.C:
+			N_hom = [0,0]
+			N_chet = [0,0]
+			N_cant_phase = 0
+			cant_phase_fam = []
+			N_more_than_three = 0
+			for i, trio in enumerate(Trios):
+				variants_in_fam = Gene_Fam_dat[trio.FamID][t] #list of variants in this gene in this fam
+				#for item in variants_in_fam
+				if len(variants_in_fam) == 1: #only 1 variant
+					var_k, gt_pro, gt_fa, gt_mo = variants_in_fam[0]
+					if gt_fa == [1,1] and gt_mo == [1,1]:
+						exp = 1
+					elif gt_fa == [0,1] and gt_mo == [0,1]:
+						exp = 0.25
+					elif (gt_fa == [0,1] and gt_mo ==[1,1]) or (gt_fa == [1,1] and gt_mo == [0,1]):
+						exp = 0.5
+					else:
+						exp = 0
+					if gt_pro == [1,1]:
+						obs = 1
+					else:
+						obs = 0
+					N_hom[0] += exp
+					N_hom[1] += obs
+				elif len(variants_in_fam) == 2: # 2 variants 
+					v1, gt_p1, gt_f1, gt_m1 = variants_in_fam[0]
+					v2, gt_p2, gt_f2, gt_m2 = variants_in_fam[1]
+					if (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,0]) or (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,0]):
+						if gt_p1 == [0,1] and gt_p2 == [0,1]:
+							obs = 1
+							exp = 0.25
+							N_chet[0] += exp
+							N_chet[1] += obs
+						elif (gt_p1 == [0,0] and gt_p2 == [0,1]) or (gt_p1 == [0,1] and gt_p2 == [0,0]) or (gt_p1 == [0,0] and gt_p2 == [0,0]):
+							obs = 0
+							exp = 0.25
+							N_chet[0] += exp
+							N_chet[1] += obs
+					elif (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,1]):
+						if gt_p1 == [0,1] and gt_p2 == [0,0]:
+							obs = 0
+							exp = 0.25
+							N_chet[0] += 0.25
+							N_hom[0] += 0.25 
+					elif (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,1]):
+						if gt_p1 == [0,1] and gt_p2 == [0,0]:
+							obs = 0
+							exp = 0.25
+							N_chet[0] += 0.25
+							N_hom[0] += 0.25 
+					elif (gt_f1 == [0,1] and gt_m1 == [0,1] and gt_f2 == [0,0] and gt_m2 == [0,1]):
+						if gt_p1 == [0,0] and gt_p2 == [0,1]:
+							obs = 0
+							exp = 0.25
+							N_chet[0] += 0.25
+							N_hom[0] += 0.25 
+					elif (gt_f1 == [0,1] and gt_m1 == [0,0] and gt_f2 == [0,1] and gt_m2 == [0,0]):
+						if gt_p1 == [0,0] and gt_p2 == [0,1]:
+							obs = 0
+							exp = 0.25
+							N_chet[0] += 0.25
+							N_hom[0] += 0.25 
+					elif (gt_f1 == [0,1] and gt_m1 == [0,1] and gt_p1 == [0,1]) or (gt_f2 == [0,1] and gt_m2 == [0,1] and gt_p2 == [0,1]):
+						# Unable to phase
+						N_cant_phase += 1
+						cant_phase_fam.append(trio.FamID)
+				elif len(variants_in_fam) >= 2: # more than 2 variants
+					N_more_than_three += 1
+			res[t] = (N_hom, N_chet, N_cant_phase, cant_phase_fam, N_more_than_three)
+		return res
+				
+
+	def Recessive2(self, Chr, GenotypeFil, VEPFil, AFFil, GenecodeFil):
+		GenotypeFil = pysam.TabixFile(GenotypeFil)
+		VEPFil = pysam.TabixFile(VEPFil)
+		AFFil = pysam.TabixFile(AFFil)
+		Genes, Transtripts = LoadGeneCode(GenecodeFil)
+		CSQ_header = [X.strip().split("Format: ")[1].rstrip('>\"').split("|") for X in VEPFil.header if X.startswith("##INFO=<ID=CSQ")][0]
+		Samples = GenotypeFil.header[-1].split("\t")[9:]
 		OutFil = open("Rec.Chr{}.txt".format(Chr), 'w')
 		OutFil.write("#Gene\t" + "\t".join(["{}.obs\t{}.haps".format(t,t) for t in self.C]) + "\n")
 		Trios = self.LoadPedigree("a", Samples)
 
-		for i, (Gene,GTF) in enumerate(Genes.items()):
+		for i, (Gene,GTF) in enumerate(Genes.items()): # iterate through genes
+			Gene_Fam_dat = {}
 			for i,trio in enumerate(Trios):
 				#for cat in ["syn","lgd","mis","cadd15","cadd20","cadd25","revel.5"]:
+				Gene_Fam_dat[trio.FamID] = {}
 				for cat in self.C:
-					Trios[i].pro_haps[cat] = [0,0]
-					Trios[i].fa_haps[cat] = [0,0]
-					Trios[i].mo_haps[cat] = [0,0]
+					Gene_Fam_dat[trio.FamID][cat] = []
 				#Trios[i].pro_haps[lgd/dmis] = [[0,0], [0,0]] # consider lgd/dmis and dmis/lgd seperately and then combine to observed.
 			start, end = int(GTF.start), int(GTF.end)
 			veps, cohort, genotypes = [],[], []
@@ -207,24 +409,23 @@ class RecessiveModel:
 						#print (cons)
 						if len(set(cons).intersection(self.LGD))>= 1:
 							#print (gnomADe_af, af, cons)
-							self.LookUpBiallic(i, "lgd", fmt, Sample_genotypes, Trios)
+							#self.LookUpBiallic(i, "lgd", fmt, Sample_genotypes, Trios)
+							self.AddVar(i, "lgd", fmt, Sample_genotypes, Trios)
 						if "synonymous_variant" in set(cons):
-							self.LookUpBiallic(i, "syn", fmt, Sample_genotypes, Trios)
+							self.AddVar(i, "syn", fmt, Sample_genotypes, Trios)
 						if "missense_variant" in set(cons):
-							self.LookUpBiallic(i, "mis", fmt, Sample_genotypes, Trios)
+							self.AddVar(i, "mis", fmt, Sample_genotypes, Trios)
 						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 15:
-							self.LookUpBiallic(i, "cadd15", fmt, Sample_genotypes, Trios)
+							self.AddVar(i, "cadd15", fmt, Sample_genotypes, Trios)
 						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 20:
-							self.LookUpBiallic(i, "cadd20", fmt, Sample_genotypes, Trios)
+							self.AddVar(i, "cadd20", fmt, Sample_genotypes, Trios)
 						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 25:
-							self.LookUpBiallic(i, "cadd25", fmt, Sample_genotypes, Trios)
+							self.AddVar(i, "cadd25", fmt, Sample_genotypes, Trios)
 						try:
 							if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["REVEL_score"]) > 0.5:
-								self.LookUpBiallic(i, "revel.5", fmt, Sample_genotypes, Trios)
+								self.AddVar(i, "revel.5", fmt, Sample_genotypes, Trios)
 						except ValueError:
 							continue
-						#if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0][""CADD_PHRED""]) > 20 or (len(set(cons).intersection(self.LGD))>= 1):
-						#	self.LookUpBiallicLGD_DMIS(i, "lgd/dmis", fmt, Sample_genotypes, Trios)
 					except KeyError as e:
 						print(e)
 						print("KeyError", Ref, Alts, Alt, Allele_CSQ_dict)
@@ -250,8 +451,8 @@ class RecessiveModel:
 					#	Mix += 1
 			#OutFil.write("{}\t{}\t{}\n".format(Gene, "\t".join("{}\t{}".format(Obs[t], Nhaps[t]) for t in self.C), Mix))
 			OutFil.write("{}\t{}\n".format(Gene, "\t".join("{}\t{}".format(Obs[t], Nhaps[t]) for t in self.C)))
-
 		return
+
 	def LookUpBiallic(self, i, Vartype, fmt, gts, Trios):
 		for j, trio in enumerate(Trios):
 			prob, fa, mo = trio.Proband, trio.Father, trio.Mother
@@ -282,10 +483,6 @@ class RecessiveModel:
 						Trios[j].fa_haps[Vartype][0] = 1
 					Trios[j].pro_haps[Vartype][0] = 1
 					
-				#elif gt_fa[1] == 0 and gt_prob[1] == 0:
-				#	Trios[j].fa_haps[Vartype][1] = 1
-
-
 				elif gt_prob[1] == gt_mo[1] and gt_fa[1] == 0 and gt_prob[1] == i+1: #maternal transmitted
 					if gt_mo[0] == i+1: # transmitted from hom maternal
 						Trios[j].mo_haps[Vartype] = [1,1]
