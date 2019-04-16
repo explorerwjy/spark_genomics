@@ -168,14 +168,11 @@ class RecessiveModel:
 		Trios = self.LoadPedigree("a", Samples)
 
 		for i, (Gene,GTF) in enumerate(Genes.items()): # iterate through genes
-			#print (i, Gene)
-			Gene_Fam_dat = {}
-			for i,trio in enumerate(Trios):
-				#for cat in ["syn","lgd","mis","cadd15","cadd20","cadd25","revel.5"]:
-				Gene_Fam_dat[trio.FamID] = {}
-				for cat in self.C:
-					Gene_Fam_dat[trio.FamID][cat] = []
-				#Trios[i].pro_haps[lgd/dmis] = [[0,0], [0,0]] # consider lgd/dmis and dmis/lgd seperately and then combine to observed.
+			Gene_Fam_dat = {} # store genotypes for each fam, group by variant categories
+			for cat in self.C:
+				Gene_Fam_dat[cat] = {}
+				for i, trio in enumerate(Trios):
+					Gene_Fam_dat[cat][trio.FamID] = []
 			start, end = int(GTF.start), int(GTF.end)
 			veps, cohort, genotypes = [],[], []
 			for term in VEPFil.fetch(Chr, start, end):
@@ -242,18 +239,12 @@ class RecessiveModel:
 			CantPhase = {}
 			MoreThanThree = {}
 			CantPhase_fams = {}
-			#for t in self.C:
-			#	OBS[t] = 0
-			#	EXP[t] = 0
-			#	CantPhase[t] = 0
-			#	MoreThanThree[t] = 0
-			#	CantPhase_fams[t] = []
 			for t in self.C:
-				OBS[t] = (res[t][0][1] + res[t][1][1])
-				EXP[t] = (res[t][0][0] + res[t][1][0])
-				CantPhase[t] = res[t][2]
-				CantPhase_fams[t] = ",".join(res[t][3])
-				MoreThanThree[t] = res[t][4]
+				OBS[t] = (res[t][0] + res[t][1])
+				EXP[t] = (res[t][2])
+				CantPhase[t] = res[t][3]
+				CantPhase_fams[t] = ",".join(res[t][4])
+				MoreThanThree[t] = res[t][5]
 			OutFil.write("{}\t{}\n".format(Gene, "\t".join("{}\t{}".format(OBS[t], EXP[t]) for t in self.C)))
 			OutFil2.write("{}\t{}\n".format(Gene, "\t".join("{}\t{}\t{}".format(CantPhase[t], CantPhase_fams[t], MoreThanThree[t]) for t in self.C)))
 		return
@@ -262,15 +253,16 @@ class RecessiveModel:
 		for j, trio in enumerate(Trios):
 			prob, fa, mo = trio.Proband, trio.Father, trio.Mother
 			gt_prob, gt_fa, gt_mo = self.GenotypeQC(fmt, gts[prob.index]), self.GenotypeQC(fmt, gts[fa.index]), self.GenotypeQC(fmt, gts[mo.index])
-			if gt_prob == False or gt_fa == False or gt_mo == False:
-				continue
+			if gt_prob == False or gt_fa == False or gt_mo == False: 
+				continue # Failed QC
 			elif ( (gt_prob[1] not in [0, i+1]) or (gt_fa[1] not in [0, i+1]) or (gt_mo[1] not in [0, i+1]) ) or (gt_prob[1] == 0 and gt_fa[1] == 0 and gt_mo[1] == 0):
-				continue 
+				continue # Not this allele 
 			elif (gt_prob[0] not in gt_fa and gt_prob[1] not in gt_mo) or (gt_prob[1] not in gt_fa and gt_prob[0] not in gt_mo):
-				continue
+				continue # Mendelian Error
 			else:
 				gt_prob, gt_fa, gt_mo = self.gt_recode(gt_prob), self.gt_recode(gt_fa), self.gt_recode(gt_mo)
-				Gene_Fam_dat[trio.FamID][Vartype].append([var_k, gt_prob, gt_fa, gt_mo])
+				#Gene_Fam_dat[trio.FamID][Vartype].append([var_k, gt_prob, gt_fa, gt_mo])
+				Gene_Fam_dat[Vartype][trio.FamID].append([var_k, gt_prob, gt_fa, gt_mo])
 		return Gene_Fam_dat
 	
 	def gt_recode(self, gt):
@@ -283,75 +275,51 @@ class RecessiveModel:
 	def Phasing_N_Count(self, Gene_Fam_dat, Trios):
 		res = {}
 		for t in self.C:
-			N_hom = [0,0]
-			N_chet = [0,0]
+			N_hom = 0
+			N_chet = 0
+			N_hom_chet = 0
+			N_haps = 0
 			N_cant_phase = 0
 			cant_phase_fam = []
 			N_more_than_three = 0
 			for i, trio in enumerate(Trios):
-				variants_in_fam = Gene_Fam_dat[trio.FamID][t] #list of variants in this gene in this fam
+				variants_in_fam = Gene_Fam_dat[t][trio.FamID] #list of variants in this gene in this fam
 				#for item in variants_in_fam
 				if len(variants_in_fam) == 1: #only 1 variant
 					var_k, gt_pro, gt_fa, gt_mo = variants_in_fam[0]
-					if gt_fa == [1,1] and gt_mo == [1,1]:
-						exp = 1
-					elif gt_fa == [0,1] and gt_mo == [0,1]:
-						exp = 0.25
-					elif (gt_fa == [0,1] and gt_mo ==[1,1]) or (gt_fa == [1,1] and gt_mo == [0,1]):
-						exp = 0.5
-					else:
-						exp = 0
+					N_haps += sum(gt_fa + gt_mo)
 					if gt_pro == [1,1]:
-						obs = 1
-					else:
-						obs = 0
-					N_hom[0] += exp
-					N_hom[1] += obs
+						N_hom += 1
 				elif len(variants_in_fam) == 2: # 2 variants 
 					v1, gt_p1, gt_f1, gt_m1 = variants_in_fam[0]
 					v2, gt_p2, gt_f2, gt_m2 = variants_in_fam[1]
 					if (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,0]) or (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,0]):
+						# 0/0 0/1 -> 0/1 
+						# 0/1 0/0 -> 0/1
+						N_haps += 2
 						if gt_p1 == [0,1] and gt_p2 == [0,1]:
-							obs = 1
-							exp = 0.25
-							N_chet[0] += exp
-							N_chet[1] += obs
-						elif (gt_p1 == [0,0] and gt_p2 == [0,1]) or (gt_p1 == [0,1] and gt_p2 == [0,0]) or (gt_p1 == [0,0] and gt_p2 == [0,0]):
-							obs = 0
-							exp = 0.25
-							N_chet[0] += exp
-							N_chet[1] += obs
-					elif (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,1]):
-						if gt_p1 == [0,1] and gt_p2 == [0,0]:
-							obs = 0
-							exp = 0.25
-							N_chet[0] += 0.25
-							N_hom[0] += 0.25 
-					elif (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,1]):
-						if gt_p1 == [0,1] and gt_p2 == [0,0]:
-							obs = 0
-							exp = 0.25
-							N_chet[0] += 0.25
-							N_hom[0] += 0.25 
-					elif (gt_f1 == [0,1] and gt_m1 == [0,1] and gt_f2 == [0,0] and gt_m2 == [0,1]):
-						if gt_p1 == [0,0] and gt_p2 == [0,1]:
-							obs = 0
-							exp = 0.25
-							N_chet[0] += 0.25
-							N_hom[0] += 0.25 
-					elif (gt_f1 == [0,1] and gt_m1 == [0,0] and gt_f2 == [0,1] and gt_m2 == [0,0]):
-						if gt_p1 == [0,0] and gt_p2 == [0,1]:
-							obs = 0
-							exp = 0.25
-							N_chet[0] += 0.25
-							N_hom[0] += 0.25 
+							N_chet += 1
+						#elif (gt_p1 == [0,0] and gt_p2 == [0,1]) or (gt_p1 == [0,1] and gt_p2 == [0,0]) or (gt_p1 == [0,0] and gt_p2 == [0,0]):
+						#	N_chet += 0
+					#elif (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,1]):
+					#	if gt_p1 == [0,1] and gt_p2 == [0,0]:
+					#		Nhaps += 3
+					#elif (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,1]):
+					#	if gt_p1 == [0,1] and gt_p2 == [0,0]:
+					#		Nhaps += 3
+					#elif (gt_f1 == [0,1] and gt_m1 == [0,1] and gt_f2 == [0,0] and gt_m2 == [0,1]):
+					#	if gt_p1 == [0,0] and gt_p2 == [0,1]:
+					#		Nhaps += 3
+					#elif (gt_f1 == [0,1] and gt_m1 == [0,0] and gt_f2 == [0,1] and gt_m2 == [0,0]):
+					#	if gt_p1 == [0,0] and gt_p2 == [0,1]:
+					#		Nhaps += 3
 					elif (gt_f1 == [0,1] and gt_m1 == [0,1] and gt_p1 == [0,1]) or (gt_f2 == [0,1] and gt_m2 == [0,1] and gt_p2 == [0,1]):
 						# Unable to phase
 						N_cant_phase += 1
 						cant_phase_fam.append(trio.FamID)
 				elif len(variants_in_fam) >= 2: # more than 2 variants
 					N_more_than_three += 1
-			res[t] = (N_hom, N_chet, N_cant_phase, cant_phase_fam, N_more_than_three)
+			res[t] = (N_hom, N_chet, N_haps, N_cant_phase, cant_phase_fam, N_more_than_three)
 		return res
 				
 
