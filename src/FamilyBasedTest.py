@@ -105,7 +105,7 @@ class RecessiveModel:
 				return False
 		return [int(i) for i in GT]
 
-	def LoadPedigree(self, PedFil, Samples):
+	def LoadPedigree2(self, PedFil, Samples):
 		PedFil = "/home/local/users/jw/Genetics_Projects/SPARK/spark_genomics/dat/EUR_Trios.ped"
 		Trios = []
 		reader = csv.reader(open(PedFil, 'rt'), delimiter="\t")
@@ -123,6 +123,29 @@ class RecessiveModel:
 				Trios.append(tmp)
 				counter = 0
 		return Trios
+	def LoadPedigree(self, PedFil, Samples):
+		PedFil = "/home/local/users/jw/Genetics_Projects/SPARK/spark_genomics/dat/EUR_Fams.ped"
+		Fams = []
+		reader = csv.reader(open(PedFil, 'rt'), delimiter="\t")
+		PreFamID, tmp = None, None
+		for row in reader:
+			row.append(Samples.index(row[1])) # Add sample index in VCF header, to locate genotype
+			FamID = row[0]
+			if FamID != PreFamID:
+				if tmp != None:
+					Fams.append(tmp)
+				tmp = Family(FamID)
+				PreFamID = FamID
+				tmp.Proband = Sample(row)
+			else:
+				if row[1] == tmp.Proband.Father:
+					tmp.Father = Sample(row)
+				elif row[1] == tmp.Proband.Mother:
+					tmp.Mother = Sample(row)
+				else:
+					tmp.Siblings.append(Sample(row))
+		return Fams
+
 	def getINFO(self, info_string):
 		infolist = info_string.split(';')
 		infodict = {}
@@ -251,18 +274,26 @@ class RecessiveModel:
 
 	def AddVar(self, i, var_k, Vartype, fmt, gts, Trios, Gene_Fam_dat):
 		for j, trio in enumerate(Trios):
-			prob, fa, mo = trio.Proband, trio.Father, trio.Mother
+			prob, fa, mo, sibs = trio.Proband, trio.Father, trio.Mother, trio.Siblings
 			gt_prob, gt_fa, gt_mo = self.GenotypeQC(fmt, gts[prob.index]), self.GenotypeQC(fmt, gts[fa.index]), self.GenotypeQC(fmt, gts[mo.index])
+			gt_sibs = [self.GenotypeQC(fmt, gts[x.index]) for x in sibs]
 			if gt_prob == False or gt_fa == False or gt_mo == False: 
 				continue # Failed QC
 			elif ( (gt_prob[1] not in [0, i+1]) or (gt_fa[1] not in [0, i+1]) or (gt_mo[1] not in [0, i+1]) ) or (gt_prob[1] == 0 and gt_fa[1] == 0 and gt_mo[1] == 0):
 				continue # Not this allele 
+			sib_fail_qc = False
+			for gt in gt_sibs:
+				if gt == False:
+					sib_fail_qc = True
+			if sib_fail_qc:
+				continue
 			elif (gt_prob[0] not in gt_fa and gt_prob[1] not in gt_mo) or (gt_prob[1] not in gt_fa and gt_prob[0] not in gt_mo):
 				continue # Mendelian Error
 			else:
 				gt_prob, gt_fa, gt_mo = self.gt_recode(gt_prob), self.gt_recode(gt_fa), self.gt_recode(gt_mo)
+				gt_sibs = [self.gt_recode(gt) for gt in gt_sibs]
 				#Gene_Fam_dat[trio.FamID][Vartype].append([var_k, gt_prob, gt_fa, gt_mo])
-				Gene_Fam_dat[Vartype][trio.FamID].append([var_k, gt_prob, gt_fa, gt_mo])
+				Gene_Fam_dat[Vartype][trio.FamID].append([var_k, gt_prob, gt_fa, gt_mo, gt_sibs])
 		return Gene_Fam_dat
 	
 	def gt_recode(self, gt):
@@ -273,6 +304,51 @@ class RecessiveModel:
 		return gt
 
 	def Phasing_N_Count(self, Gene_Fam_dat, Trios):
+		res = {}
+		for t in self.C:
+			N_hom = 0
+			N_chet = 0
+			N_hom_chet = 0
+			N_haps = 0
+			N_cant_phase = 0
+			cant_phase_fam = []
+			N_more_than_three = 0
+			for i, trio in enumerate(Trios):
+				variants_in_fam = Gene_Fam_dat[t][trio.FamID] #list of variants in this gene in this fam
+				#for item in variants_in_fam
+				if len(variants_in_fam) == 1: #only 1 variant
+					var_k, gt_pro, gt_fa, gt_mo, gt_sibs = variants_in_fam[0]
+					N_haps += sum(gt_fa + gt_mo)
+					for gt in [gt_pro] + gt_sibs:
+						if gt == [1,1]:
+							N_hom += 1
+				elif len(variants_in_fam) == 2: # 2 variants 
+					v1, gt_p1, gt_f1, gt_m1, gt_sibs1 = variants_in_fam[0]
+					v2, gt_p2, gt_f2, gt_m2, gt_sibs2 = variants_in_fam[1]
+					gts1 = [gt_p1] + gt_sibs1
+					gts2 = [gt_p2] + gt_sibs2
+					if (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,0]) or (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,0]):
+						# 0/0 0/1 -> 0/1 
+						# 0/1 0/0 -> 0/1
+						N_haps += 2
+						for gt1, gt2 in zip(gts1 ,gts2):
+							if gt1 == [0,1] and gt2 == [0,1]:
+								N_chet += 1
+					elif (gt_f1 == [0,1] and gt_m1 == [0,1] and gt_p1 == [0,1]) or (gt_f2 == [0,1] and gt_m2 == [0,1] and gt_p2 == [0,1]):
+						# Unable to phase
+						N_cant_phase += 1
+						N_haps += 4
+						#N_chet += 1
+						cant_phase_fam.append(trio.FamID)
+						for gt1, gt2 in zip(gts1, gts2):
+							if gt1 == [0,1] and gt2 == [0,1]:
+								N_chet += 1
+				elif len(variants_in_fam) >= 2: # more than 2 variants
+					N_more_than_three += 1
+			res[t] = (N_hom, N_chet, N_haps, N_cant_phase, cant_phase_fam, N_more_than_three)
+		return res
+
+	def Phasing_N_Count2(self, Gene_Fam_dat, Trios):
 		res = {}
 		for t in self.C:
 			N_hom = 0
@@ -321,7 +397,6 @@ class RecessiveModel:
 					N_more_than_three += 1
 			res[t] = (N_hom, N_chet, N_haps, N_cant_phase, cant_phase_fam, N_more_than_three)
 		return res
-				
 
 	def Recessive2(self, Chr, GenotypeFil, VEPFil, AFFil, GenecodeFil):
 		GenotypeFil = pysam.TabixFile(GenotypeFil)
