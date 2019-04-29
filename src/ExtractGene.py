@@ -105,24 +105,6 @@ class RecessiveModel:
 				return False
 		return [int(i) for i in GT]
 
-	def LoadPedigree2(self, PedFil, Samples):
-		PedFil = "/home/local/users/jw/Genetics_Projects/SPARK/spark_genomics/dat/EUR_Trios.ped"
-		Trios = []
-		reader = csv.reader(open(PedFil, 'rt'), delimiter="\t")
-		counter = 0
-		for row in reader:
-			row.append(Samples.index(row[1]))
-			counter += 1
-			if counter == 1:
-				tmp = Family(row[0])
-				tmp.Proband = Sample(row)
-			if counter == 2:
-				tmp.Father = Sample(row)
-			if counter == 3:
-				tmp.Mother = Sample(row)
-				Trios.append(tmp)
-				counter = 0
-		return Trios
 	def LoadPedigree(self, PedFil, Samples):
 		PedFil = "/home/local/users/jw/Genetics_Projects/SPARK/spark_genomics/dat/EUR_Fams.ped"
 		Fams = []
@@ -176,107 +158,92 @@ class RecessiveModel:
 					res[Alt].append(csq)
 		return res
 
-	def Recessive(self, Chr, GenotypeFil, VEPFil, AFFil, GenecodeFil):
+	def Recessive(self, Chr, Gene, GenotypeFil, VEPFil, AFFil, GenecodeFil):
+		Gene = Gene
 		GenotypeFil = pysam.TabixFile(GenotypeFil)
 		VEPFil = pysam.TabixFile(VEPFil)
 		AFFil = pysam.TabixFile(AFFil)
 		Genes, Transtripts = LoadGeneCode(GenecodeFil)
 		CSQ_header = [X.strip().split("Format: ")[1].rstrip('>\"').split("|") for X in VEPFil.header if X.startswith("##INFO=<ID=CSQ")][0]
 		Samples = GenotypeFil.header[-1].split("\t")[9:]
-		OutFil = open("Rec.FamTest.Chr{}.txt".format(Chr), 'w')
-		OutFil.write("#Gene\t" + "\t".join(["{}.obs\t{}.haps".format(t,t) for t in self.C]) + "\n")
-		OutFil2 = open("Rec.FamTest.Chr{}.sup.txt".format(Chr), 'w')
-		OutFil2.write("#Gene\t" + "\t".join(["{}.NCantPhase\t{}.CantPhaseFams\t{}.N3vars".format(t,t,t) for t in self.C]) + "\n")
+		OutFil = csv.writer(open("Rec.Chr{}.{}.variants.tsv".format(Chr, Gene), 'w'), delimiter="\t")
+		Header = ["Chr", "Pos", "Ref", "Alt", "effect", "Consequence", "gnomADg_AF_NFE", "CADD_PHRED", "REVEL_score", "FamID", "SampleID", "Genotype", "Role", "N_kid_in_Fam"]
+		OutFil.writerow(Header)
+		#OutFil2 = open("Rec.FamTest.Chr{}.sup.txt".format(Chr), 'w')
+		#OutFil2.write("#Gene\t" + "\t".join(["{}.NCantPhase\t{}.CantPhaseFams\t{}.N3vars".format(t,t,t) for t in self.C]) + "\n")
 		#OutFil2.write("{}\t{}\t{}\n".format(Gene, "\t".join("{}\t{}\t{}".format(CantPhase[t], CantPhase_fams[t], MoreThanThree[t]) for t in self.C)))
 		Trios = self.LoadPedigree("a", Samples)
 
-		for i, (Gene,GTF) in enumerate(Genes.items()): # iterate through genes
-			Gene_Fam_dat = {} # store genotypes for each fam, group by variant categories
-			for cat in self.C:
-				Gene_Fam_dat[cat] = {}
-				for i, trio in enumerate(Trios):
-					Gene_Fam_dat[cat][trio.FamID] = []
-			start, end = int(GTF.start), int(GTF.end)
-			veps, cohort, genotypes = [],[], []
-			for term in VEPFil.fetch(Chr, start, end):
-				veps.append(term)
-			for term in AFFil.fetch(Chr, start, end):
-				cohort.append(term)
-			for term in GenotypeFil.fetch(Chr, start, end):
-				genotypes.append(term)
-			for var in zip(veps, cohort, genotypes):
-				llist = var[0].split("\t")
-				llist2 = var[2].split("\t")
-				Chr, Pos, Ref, Alts = llist[0], llist[1], llist[3], llist[4]
-				cohort_af = list(map(float, self.getINFO(var[1].split("\t")[7])["EUR_AF"].split(",")))
-				fmt = llist2[8]
-				Sample_genotypes = llist2[9:]
-				infodict = self.getINFO(llist[7])
-				Allele_CSQ_dict = self.match_allele_csq(Ref, Alts, CSQ_header, infodict["CSQ"])
-				for i, Alt in enumerate(Alts.split(",")):
-					var_k = "{}:{}:{}:{}".format(Chr, Pos, Ref, Alt)
-					try:
-						Allele_CSQ_dict[Alt][0]["gnomADg_AF_NFE"] = Allele_CSQ_dict[Alt][0]["gnomADg_AF_NFE"].split("&")[0]
-						Allele_CSQ_dict[Alt][0]["gnomADe_AF_NFE"] = Allele_CSQ_dict[Alt][0]["gnomADe_AF_NFE"].split("&")[0]
-						vep = Allele_CSQ_dict[Alt][0]
-						gnomADg_af = 0 if (vep["gnomADg_AF_NFE"] == "" or vep["gnomADg_AF_NFE"] == ".")\
-								else float(vep["gnomADg_AF_NFE"])
-						gnomADe_af = 0 if (vep["gnomADe_AF_NFE"] == "" or vep["gnomADe_AF_NFE"] == ".")\
-								else float(vep["gnomADe_AF_NFE"])
-						af = cohort_af[i]
-						#if gnomADg_af > 1e-2 or af > 1e-2 or af == 0:
-						#if max(gnomADg_af, af) > 1e-2 or af == 0:
-						if max(gnomADg_af, af) > self.AF_cutoff or af == 0:
-							continue
-						cons = Allele_CSQ_dict[Alt][0]["Consequence"]
-						#print (cons)
-						if len(set(cons).intersection(self.LGD))>= 1:
-							#print (gnomADe_af, af, cons)
-							#self.LookUpBiallic(i, "lgd", fmt, Sample_genotypes, Trios)
-							Gene_Fam_dat = self.AddVar(i, var_k, "lgd", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
-						if "synonymous_variant" in set(cons):
-							Gene_Fam_dat = self.AddVar(i, var_k, "syn", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
-						if "missense_variant" in set(cons):
-							Gene_Fam_dat = self.AddVar(i, var_k, "mis", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
-						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 15:
-							Gene_Fam_dat = self.AddVar(i, var_k, "cadd15", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
-						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 20:
-							Gene_Fam_dat = self.AddVar(i, var_k, "cadd20", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
-						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 25:
-							Gene_Fam_dat = self.AddVar(i, var_k, "cadd25", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
-						try:
-							if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["REVEL_score"]) > 0.5:
-								Gene_Fam_dat = self.AddVar(i, var_k, "revel.5", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
-						except ValueError:
-							continue
-					except KeyError as e:
-						print(e)
-						print("KeyError", Ref, Alts, Alt, Allele_CSQ_dict)
-						return
-					except IndexError:
-						print("IndexError", Ref, Alts, llist[7], Allele_CSQ_dict)
-						return
-			res = self.Phasing_N_Count(Gene_Fam_dat, Trios)
-			OBS = {}
-			EXP = {}
-			CantPhase = {}
-			MoreThanThree = {}
-			CantPhase_fams = {}
-			for t in self.C:
-				OBS[t] = (res[t][0] + res[t][1])
-				EXP[t] = (res[t][2])
-				CantPhase[t] = res[t][3]
-				CantPhase_fams[t] = ",".join(res[t][4])
-				MoreThanThree[t] = res[t][5]
-			OutFil.write("{}\t{}\n".format(Gene, "\t".join("{}\t{}".format(OBS[t], EXP[t]) for t in self.C)))
-			OutFil2.write("{}\t{}\n".format(Gene, "\t".join("{}\t{}\t{}".format(CantPhase[t], CantPhase_fams[t], MoreThanThree[t]) for t in self.C)))
+		#for i, (Gene,GTF) in enumerate(Genes.items()): # iterate through genes
+		GTF  = Genes[Gene]
+		Gene_Fam_dat = {} # store genotypes for each fam, group by variant categories
+		for cat in self.C:
+			Gene_Fam_dat[cat] = {}
+			for i, trio in enumerate(Trios):
+				Gene_Fam_dat[cat][trio.FamID] = []
+		start, end = int(GTF.start), int(GTF.end)
+		veps, cohort, genotypes = [],[], []
+		for term in VEPFil.fetch(Chr, start, end):
+			veps.append(term)
+		for term in AFFil.fetch(Chr, start, end):
+			cohort.append(term)
+		for term in GenotypeFil.fetch(Chr, start, end):
+			genotypes.append(term)
+		for var in zip(veps, cohort, genotypes):
+			llist = var[0].split("\t")
+			llist2 = var[2].split("\t")
+			Chr, Pos, Ref, Alts = llist[0], llist[1], llist[3], llist[4]
+			cohort_af = list(map(float, self.getINFO(var[1].split("\t")[7])["EUR_AF"].split(",")))
+			fmt = llist2[8]
+			Sample_genotypes = llist2[9:]
+			infodict = self.getINFO(llist[7])
+			Allele_CSQ_dict = self.match_allele_csq(Ref, Alts, CSQ_header, infodict["CSQ"])
+			for i, Alt in enumerate(Alts.split(",")):
+				var_k = "{}:{}:{}:{}".format(Chr, Pos, Ref, Alt)
+				try:
+					Allele_CSQ_dict[Alt][0]["gnomADg_AF_NFE"] = Allele_CSQ_dict[Alt][0]["gnomADg_AF_NFE"].split("&")[0]
+					Allele_CSQ_dict[Alt][0]["gnomADe_AF_NFE"] = Allele_CSQ_dict[Alt][0]["gnomADe_AF_NFE"].split("&")[0]
+					vep = Allele_CSQ_dict[Alt][0]
+					gnomADg_af = 0 if (vep["gnomADg_AF_NFE"] == "" or vep["gnomADg_AF_NFE"] == ".")\
+							else float(vep["gnomADg_AF_NFE"])
+					gnomADe_af = 0 if (vep["gnomADe_AF_NFE"] == "" or vep["gnomADe_AF_NFE"] == ".")\
+							else float(vep["gnomADe_AF_NFE"])
+					af = cohort_af[i]
+					if max(gnomADg_af, af) > self.AF_cutoff or af == 0:
+						continue
+					cons = Allele_CSQ_dict[Alt][0]["Consequence"]
+					if len(set(cons).intersection(self.LGD))>= 1:
+						Gene_Fam_dat = self.AddVar(i, var_k, "lgd", fmt, Sample_genotypes, Trios, Gene_Fam_dat, Allele_CSQ_dict)
+					if "synonymous_variant" in set(cons):
+						Gene_Fam_dat = self.AddVar(i, var_k, "syn", fmt, Sample_genotypes, Trios, Gene_Fam_dat, Allele_CSQ_dict)
+					if "missense_variant" in set(cons):
+						Gene_Fam_dat = self.AddVar(i, var_k, "mis", fmt, Sample_genotypes, Trios, Gene_Fam_dat, Allele_CSQ_dict)
+				except KeyError as e:
+					print(e)
+					print("KeyError", Ref, Alts, Alt, Allele_CSQ_dict)
+					return
+				except IndexError:
+					print("IndexError", Ref, Alts, llist[7], Allele_CSQ_dict)
+					return
+		res = self.Phasing_N_Count(Gene_Fam_dat, Trios, OutFil)
 		return
 
-	def AddVar(self, i, var_k, Vartype, fmt, gts, Trios, Gene_Fam_dat):
+	def AddVar(self, i, var_k, Vartype, fmt, gts, Trios, Gene_Fam_dat, Allele_CSQ_dict):
+		var_info = []
+		var_coord = var_k.split(":")
+		var_info.extend(var_coord)
+		alt = var_coord[3]
+		var_info.append(Vartype)
+		var_info.append(Allele_CSQ_dict[alt][0]["Consequence"])
+		var_info.append(Allele_CSQ_dict[alt][0]["gnomADg_AF_NFE"])
+		var_info.append(Allele_CSQ_dict[alt][0]["CADD_PHRED"])
+		var_info.append(Allele_CSQ_dict[alt][0]["REVEL_score"])
 		for j, trio in enumerate(Trios):
 			prob, fa, mo, sibs = trio.Proband, trio.Father, trio.Mother, trio.Siblings
 			gt_prob, gt_fa, gt_mo = self.GenotypeQC(fmt, gts[prob.index]), self.GenotypeQC(fmt, gts[fa.index]), self.GenotypeQC(fmt, gts[mo.index])
+			GT_prob, GT_fa, GT_mo = gts[prob.index], gts[fa.index], gts[mo.index]
 			gt_sibs = [self.GenotypeQC(fmt, gts[x.index]) for x in sibs]
+			GT_sibs = [gts[x.index] for x in sibs]
 			if gt_prob == False or gt_fa == False or gt_mo == False: 
 				continue # Failed QC
 			elif ( (gt_prob[1] not in [0, i+1]) or (gt_fa[1] not in [0, i+1]) or (gt_mo[1] not in [0, i+1]) ) or (gt_prob[1] == 0 and gt_fa[1] == 0 and gt_mo[1] == 0):
@@ -293,7 +260,7 @@ class RecessiveModel:
 				gt_prob, gt_fa, gt_mo = self.gt_recode(gt_prob), self.gt_recode(gt_fa), self.gt_recode(gt_mo)
 				gt_sibs = [self.gt_recode(gt) for gt in gt_sibs]
 				#Gene_Fam_dat[trio.FamID][Vartype].append([var_k, gt_prob, gt_fa, gt_mo])
-				Gene_Fam_dat[Vartype][trio.FamID].append([var_k, gt_prob, gt_fa, gt_mo, gt_sibs])
+				Gene_Fam_dat[Vartype][trio.FamID].append([var_k, var_info, gt_prob, gt_fa, gt_mo, gt_sibs, GT_prob, GT_fa, GT_mo, GT_sibs])
 		return Gene_Fam_dat
 	
 	def gt_recode(self, gt):
@@ -303,7 +270,7 @@ class RecessiveModel:
 			gt[1] = 1
 		return gt
 
-	def Phasing_N_Count(self, Gene_Fam_dat, Trios):
+	def Phasing_N_Count(self, Gene_Fam_dat, Trios, OutFil):
 		res = {}
 		for t in self.C:
 			N_hom = 0
@@ -314,187 +281,80 @@ class RecessiveModel:
 			cant_phase_fam = []
 			N_more_than_three = 0
 			for i, trio in enumerate(Trios):
+				Nindv = len(trio.Siblings) + 1
 				variants_in_fam = Gene_Fam_dat[t][trio.FamID] #list of variants in this gene in this fam
 				#for item in variants_in_fam
 				if len(variants_in_fam) == 1: #only 1 variant
-					var_k, gt_pro, gt_fa, gt_mo, gt_sibs = variants_in_fam[0]
+					var_k, var_info, gt_pro, gt_fa, gt_mo, gt_sibs, GT_prob, GT_fa, GT_mo, GT_sibs = variants_in_fam[0]
 					N_haps += sum(gt_fa + gt_mo)
-					for gt in [gt_pro] + gt_sibs:
+					OutParents = False
+					for i, (gt, GT, SPID) in enumerate(zip([gt_pro] + gt_sibs, [GT_prob] + GT_sibs, [trio.Proband.sampleID] + [x.sampleID for x in trio.Siblings])):
 						if gt == [1,1]:
+							OutParents = True
 							N_hom += 1
+							if i == 0:
+								OutFil.writerow(var_info + [trio.FamID, SPID, GT, "Proband", Nindv])
+							else:
+								OutFil.writerow(var_info + [trio.FamID, SPID, GT, "Sibling", Nindv])
+					if OutParents:
+						OutFil.writerow(var_info + [trio.FamID, trio.Father.sampleID, GT_fa, "Father", Nindv])
+						OutFil.writerow(var_info + [trio.FamID, trio.Mother.sampleID, GT_mo, "Mother", Nindv])
 				elif len(variants_in_fam) == 2: # 2 variants 
-					v1, gt_p1, gt_f1, gt_m1, gt_sibs1 = variants_in_fam[0]
-					v2, gt_p2, gt_f2, gt_m2, gt_sibs2 = variants_in_fam[1]
-					gts1 = [gt_p1] + gt_sibs1
-					gts2 = [gt_p2] + gt_sibs2
+					v1, var_info1, gt_p1, gt_f1, gt_m1, gt_sibs1, GT_prob1, GT_fa1, GT_mo1, GT_sibs1 = variants_in_fam[0]
+					v2, var_info2, gt_p2, gt_f2, gt_m2, gt_sibs2, GT_prob2, GT_fa2, GT_mo2, GT_sibs2 = variants_in_fam[1]
+					gts1 = zip([gt_p1] + gt_sibs1, [GT_prob1] + GT_sibs1, [trio.Proband.sampleID] + [x.sampleID for x in trio.Siblings])
+					gts2 = zip([gt_p2] + gt_sibs2, [GT_prob2] + GT_sibs2, [trio.Proband.sampleID] + [x.sampleID for x in trio.Siblings])
 					if (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,0]) or (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,0]):
 						# 0/0 0/1 -> 0/1 
 						# 0/1 0/0 -> 0/1
 						N_haps += 2
-						for gt1, gt2 in zip(gts1 ,gts2):
+						OutParents = False
+						for i, (gt1, gt2) in enumerate(zip(gts1 ,gts2)):
+							gt1, GT1, SPID1 = gt1
+							gt2, GT2, SPID2 = gt2
 							if gt1 == [0,1] and gt2 == [0,1]:
 								N_chet += 1
+								OutParents = True
+								if i == 0:
+									OutFil.writerow(var_info1 + [trio.FamID, SPID1, GT1, "Proband", Nindv])
+									OutFil.writerow(var_info2 + [trio.FamID, SPID2, GT2, "Proband", Nindv])
+								else:
+									OutFil.writerow(var_info1 + [trio.FamID, SPID1, GT1, "Sibling", Nindv])
+									OutFil.writerow(var_info2 + [trio.FamID, SPID2, GT2, "Sibling", Nindv])
+						if OutParents:
+							OutFil.writerow(var_info1 + [trio.FamID, trio.Father.sampleID, GT_fa, "Father", Nindv])
+							OutFil.writerow(var_info2 + [trio.FamID, trio.Father.sampleID, GT_fa, "Father", Nindv])
+							OutFil.writerow(var_info1 + [trio.FamID, trio.Mother.sampleID, GT_fa, "Mother", Nindv])
+							OutFil.writerow(var_info2 + [trio.FamID, trio.Mother.sampleID, GT_fa, "Mother", Nindv])
 					elif (gt_f1 == [0,1] and gt_m1 == [0,1] and gt_p1 == [0,1]) or (gt_f2 == [0,1] and gt_m2 == [0,1] and gt_p2 == [0,1]):
 						# Unable to phase
 						N_cant_phase += 1
 						N_haps += 4
-						#N_chet += 1
 						cant_phase_fam.append(trio.FamID)
-						for gt1, gt2 in zip(gts1, gts2):
+						OutParents = False
+						#for gt1, gt2 in zip(gts1, gts2):
+						for i, (gt1, gt2) in enumerate(zip(gts1 ,gts2)):
+							gt1, GT1, SPID1 = gt1
+							gt2, GT2, SPID2 = gt2
 							if gt1 == [0,1] and gt2 == [0,1]:
 								N_chet += 1
+								OutParents = True
+								if i == 0:
+									OutFil.writerow(var_info1 + [trio.FamID, SPID1, GT1, "Proband", Nindv])
+									OutFil.writerow(var_info2 + [trio.FamID, SPID2, GT2, "Proband", Nindv])
+								else:
+									OutFil.writerow(var_info1 + [trio.FamID, SPID1, GT1, "Sibling", Nindv])
+									OutFil.writerow(var_info2 + [trio.FamID, SPID2, GT2, "Sibling", Nindv])
+						if OutParents:
+							OutFil.writerow(var_info1 + [trio.FamID, trio.Father.sampleID, GT_fa, "Father", Nindv])
+							OutFil.writerow(var_info2 + [trio.FamID, trio.Father.sampleID, GT_fa, "Father", Nindv])
+							OutFil.writerow(var_info1 + [trio.FamID, trio.Father.sampleID, GT_fa, "Mother", Nindv])
+							OutFil.writerow(var_info2 + [trio.FamID, trio.Father.sampleID, GT_fa, "Mother", Nindv])
+
 				elif len(variants_in_fam) >= 2: # more than 2 variants
 					N_more_than_three += 1
 			res[t] = (N_hom, N_chet, N_haps, N_cant_phase, cant_phase_fam, N_more_than_three)
 		return res
-
-	def Phasing_N_Count2(self, Gene_Fam_dat, Trios):
-		res = {}
-		for t in self.C:
-			N_hom = 0
-			N_chet = 0
-			N_hom_chet = 0
-			N_haps = 0
-			N_cant_phase = 0
-			cant_phase_fam = []
-			N_more_than_three = 0
-			for i, trio in enumerate(Trios):
-				variants_in_fam = Gene_Fam_dat[t][trio.FamID] #list of variants in this gene in this fam
-				#for item in variants_in_fam
-				if len(variants_in_fam) == 1: #only 1 variant
-					var_k, gt_pro, gt_fa, gt_mo = variants_in_fam[0]
-					N_haps += sum(gt_fa + gt_mo)
-					if gt_pro == [1,1]:
-						N_hom += 1
-				elif len(variants_in_fam) == 2: # 2 variants 
-					v1, gt_p1, gt_f1, gt_m1 = variants_in_fam[0]
-					v2, gt_p2, gt_f2, gt_m2 = variants_in_fam[1]
-					if (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,0]) or (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,0]):
-						# 0/0 0/1 -> 0/1 
-						# 0/1 0/0 -> 0/1
-						N_haps += 2
-						if gt_p1 == [0,1] and gt_p2 == [0,1]:
-							N_chet += 1
-						#elif (gt_p1 == [0,0] and gt_p2 == [0,1]) or (gt_p1 == [0,1] and gt_p2 == [0,0]) or (gt_p1 == [0,0] and gt_p2 == [0,0]):
-						#	N_chet += 0
-					#elif (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,1]):
-					#	if gt_p1 == [0,1] and gt_p2 == [0,0]:
-					#		Nhaps += 3
-					#elif (gt_f1 == [0,0] and gt_m1 == [0,1] and gt_f2 == [0,1] and gt_m2 == [0,1]):
-					#	if gt_p1 == [0,1] and gt_p2 == [0,0]:
-					#		Nhaps += 3
-					#elif (gt_f1 == [0,1] and gt_m1 == [0,1] and gt_f2 == [0,0] and gt_m2 == [0,1]):
-					#	if gt_p1 == [0,0] and gt_p2 == [0,1]:
-					#		Nhaps += 3
-					#elif (gt_f1 == [0,1] and gt_m1 == [0,0] and gt_f2 == [0,1] and gt_m2 == [0,0]):
-					#	if gt_p1 == [0,0] and gt_p2 == [0,1]:
-					#		Nhaps += 3
-					elif (gt_f1 == [0,1] and gt_m1 == [0,1] and gt_p1 == [0,1]) or (gt_f2 == [0,1] and gt_m2 == [0,1] and gt_p2 == [0,1]):
-						# Unable to phase
-						N_cant_phase += 1
-						cant_phase_fam.append(trio.FamID)
-				elif len(variants_in_fam) >= 2: # more than 2 variants
-					N_more_than_three += 1
-			res[t] = (N_hom, N_chet, N_haps, N_cant_phase, cant_phase_fam, N_more_than_three)
-		return res
-
-	def Recessive2(self, Chr, GenotypeFil, VEPFil, AFFil, GenecodeFil):
-		GenotypeFil = pysam.TabixFile(GenotypeFil)
-		VEPFil = pysam.TabixFile(VEPFil)
-		AFFil = pysam.TabixFile(AFFil)
-		Genes, Transtripts = LoadGeneCode(GenecodeFil)
-		CSQ_header = [X.strip().split("Format: ")[1].rstrip('>\"').split("|") for X in VEPFil.header if X.startswith("##INFO=<ID=CSQ")][0]
-		Samples = GenotypeFil.header[-1].split("\t")[9:]
-		OutFil = open("Rec.Chr{}.txt".format(Chr), 'w')
-		OutFil.write("#Gene\t" + "\t".join(["{}.obs\t{}.haps".format(t,t) for t in self.C]) + "\n")
-		Trios = self.LoadPedigree("a", Samples)
-
-		for i, (Gene,GTF) in enumerate(Genes.items()): # iterate through genes
-			Gene_Fam_dat = {}
-			for i,trio in enumerate(Trios):
-				#for cat in ["syn","lgd","mis","cadd15","cadd20","cadd25","revel.5"]:
-				Gene_Fam_dat[trio.FamID] = {}
-				for cat in self.C:
-					Gene_Fam_dat[trio.FamID][cat] = []
-				#Trios[i].pro_haps[lgd/dmis] = [[0,0], [0,0]] # consider lgd/dmis and dmis/lgd seperately and then combine to observed.
-			start, end = int(GTF.start), int(GTF.end)
-			veps, cohort, genotypes = [],[], []
-			for term in VEPFil.fetch(Chr, start, end):
-				veps.append(term)
-			for term in AFFil.fetch(Chr, start, end):
-				cohort.append(term)
-			for term in GenotypeFil.fetch(Chr, start, end):
-				genotypes.append(term)
-			for var in zip(veps, cohort, genotypes):
-				llist = var[0].split("\t")
-				llist2 = var[2].split("\t")
-				Chr, Pos, Ref, Alts = llist[0], llist[1], llist[3], llist[4]
-				cohort_af = list(map(float, self.getINFO(var[1].split("\t")[7])["EUR_AF"].split(",")))
-				fmt = llist2[8]
-				Sample_genotypes = llist2[9:]
-				infodict = self.getINFO(llist[7])
-				Allele_CSQ_dict = self.match_allele_csq(Ref, Alts, CSQ_header, infodict["CSQ"])
-				for i, Alt in enumerate(Alts.split(",")):
-					try:
-						Allele_CSQ_dict[Alt][0]["gnomADg_AF_NFE"] = Allele_CSQ_dict[Alt][0]["gnomADg_AF_NFE"].split("&")[0]
-						Allele_CSQ_dict[Alt][0]["gnomADe_AF_NFE"] = Allele_CSQ_dict[Alt][0]["gnomADe_AF_NFE"].split("&")[0]
-						vep = Allele_CSQ_dict[Alt][0]
-						gnomADg_af = 0 if (vep["gnomADg_AF_NFE"] == "" or vep["gnomADg_AF_NFE"] == ".")\
-								else float(vep["gnomADg_AF_NFE"])
-						gnomADe_af = 0 if (vep["gnomADe_AF_NFE"] == "" or vep["gnomADe_AF_NFE"] == ".")\
-								else float(vep["gnomADe_AF_NFE"])
-						af = cohort_af[i]
-						#if gnomADg_af > 1e-2 or af > 1e-2 or af == 0:
-						#if max(gnomADg_af, af) > 1e-2 or af == 0:
-						if max(gnomADg_af, af) > self.AF_cutoff or af == 0:
-							continue
-						cons = Allele_CSQ_dict[Alt][0]["Consequence"]
-						#print (cons)
-						if len(set(cons).intersection(self.LGD))>= 1:
-							#print (gnomADe_af, af, cons)
-							#self.LookUpBiallic(i, "lgd", fmt, Sample_genotypes, Trios)
-							self.AddVar(i, "lgd", fmt, Sample_genotypes, Trios)
-						if "synonymous_variant" in set(cons):
-							self.AddVar(i, "syn", fmt, Sample_genotypes, Trios)
-						if "missense_variant" in set(cons):
-							self.AddVar(i, "mis", fmt, Sample_genotypes, Trios)
-						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 15:
-							self.AddVar(i, "cadd15", fmt, Sample_genotypes, Trios)
-						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 20:
-							self.AddVar(i, "cadd20", fmt, Sample_genotypes, Trios)
-						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 25:
-							self.AddVar(i, "cadd25", fmt, Sample_genotypes, Trios)
-						try:
-							if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["REVEL_score"]) > 0.5:
-								self.AddVar(i, "revel.5", fmt, Sample_genotypes, Trios)
-						except ValueError:
-							continue
-					except KeyError as e:
-						print(e)
-						print("KeyError", Ref, Alts, Alt, Allele_CSQ_dict)
-						return
-					except IndexError:
-						print("IndexError", Ref, Alts, llist[7], Allele_CSQ_dict)
-						return
-			Obs = {}
-			Nhaps = {}
-			for t in self.C:
-				Obs[t] = 0
-				Nhaps[t] = 0
-			for i,trio in enumerate(Trios):
-				for t in self.C:
-					#print(Trios[i].pro_haps[t])
-					if Trios[i].pro_haps[t] == [1,1]:
-						Obs[t] += 1
-					Nhaps[t] += sum(Trios[i].fa_haps[t])
-					Nhaps[t] += sum(Trios[i].mo_haps[t])
-					#else:
-					#	print(Trios[i].pro_haps[t])
-					#if Trios[i].pro_haps[t] == [1,1]:
-					#	Mix += 1
-			#OutFil.write("{}\t{}\t{}\n".format(Gene, "\t".join("{}\t{}".format(Obs[t], Nhaps[t]) for t in self.C), Mix))
-			OutFil.write("{}\t{}\n".format(Gene, "\t".join("{}\t{}".format(Obs[t], Nhaps[t]) for t in self.C)))
-		return
 
 	def LookUpBiallic(self, i, Vartype, fmt, gts, Trios):
 		for j, trio in enumerate(Trios):
@@ -676,11 +536,9 @@ def LoadGeneCode(genecodefil):
 # 
 def GetOptions():
 	parser = argparse.ArgumentParser()
-	#parser.add_argument("-v", "--vcf", type=str, required=True, help="<Required> VCF file")
-	#parser.add_argument("-l", "--list", type=str, required=True, help="<Required> Indv List file")
-	#parser.add_argument("-o", "--out", type=str, help="<Required> Output VCF file")
-	parser.add_argument("--chr", type=str, help="<Required> Output VCF file")
-	parser.add_argument("--af", type=float, help="<Required> Output VCF file")
+	parser.add_argument("--chr", type=str, help="<Required> Chromesome")
+	parser.add_argument("--gene", type=str, help="<Required> Gene")
+	parser.add_argument("--af", type=float, help="<Required> Allele Freq")
 	args = parser.parse_args()
 	#if args.out == None:
 	#	args.out = "test.out.vcf"
@@ -689,15 +547,14 @@ def GetOptions():
 def main():
 	args = GetOptions()
 	ins = RecessiveModel(args.af)
-	#List = [l.strip() for l in open(args.list)]
-	#ins.ComputeSiteAF(args.vcf, List, "EUR", args.out)
 	Chr = args.chr
+	Gene = args.gene
 	GenotypeFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K/VCF/TrioVCF/Genotypes/SPARK30K.TrioSamples.Chr{}.vcf.gz".format(Chr)
 	#VEPFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K/VCF/TrioVCF/sites/SPARK30K.TrioSamples.Chr{}.vep.vcf.gz".format(Chr)
 	VEPFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K/VCF/TrioVCF/sites/Annotated2/SPARK30K.TrioSamples.Chr{}.vep.vcf.gz".format(Chr)
 	AFFil = "/home/local/users/jw/Genetics_Projects/SPARK/spark_genomics/dat/SPARK30K.TrioSamples.Chr{}.eurAF.vcf.gz".format(Chr)
 	genecode = "/home/local/users/jw/vep_data/homo_sapiens/GeneCodeV29/CHRs/genecodev29.{}.gtf".format(Chr)
-	ins.Recessive(Chr, GenotypeFil ,VEPFil, AFFil, genecode)
+	ins.Recessive(Chr, Gene, GenotypeFil ,VEPFil, AFFil, genecode)
 
 if __name__=='__main__':
 	main()
