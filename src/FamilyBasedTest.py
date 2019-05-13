@@ -89,7 +89,7 @@ class RecessiveModel:
 		GT = tmp["GT"].split("/")
 		if tmp["GQ"] == ".":
 			return False
-		elif float(tmp["GQ"]) < 30:
+		elif float(tmp["GQ"]) < 60:
 			return False
 		if GT[0] == "." or GT[1] == ".":
 			return False
@@ -287,7 +287,7 @@ class RecessiveModel:
 					sib_fail_qc = True
 			if sib_fail_qc:
 				continue
-			elif (gt_prob[0] not in gt_fa or gt_prob[1] not in gt_mo) or (gt_prob[1] not in gt_fa or gt_prob[0] not in gt_mo):
+			elif (gt_prob[0] not in gt_fa or gt_prob[1] not in gt_mo) and (gt_prob[1] not in gt_fa or gt_prob[0] not in gt_mo):
 				continue # Mendelian Error
 			else:
 				gt_prob, gt_fa, gt_mo = self.gt_recode(gt_prob), self.gt_recode(gt_fa), self.gt_recode(gt_mo)
