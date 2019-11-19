@@ -11,7 +11,7 @@ import multiprocessing
 import gzip
 
 class RecessiveModel:
-	def __init__(self, af = 1e-2, SBPV_cutoff=1e-3, DP_cutoff=7, AB_cutoff1=0.2, AB_cutoff2=0.8):
+	def __init__(self, af = 1e-2, SBPV_cutoff=1e-5, DP_cutoff=7, AB_cutoff1=0.2, AB_cutoff2=0.8):
 		self.SBPV_cutoff = SBPV_cutoff
 		self.DP_cutoff = DP_cutoff
 		self.AB_cutoff1 = AB_cutoff1
@@ -22,7 +22,7 @@ class RecessiveModel:
 		self.REVEL_cutoff = 0.5
 		self.AF_cutoff = af
 		#self.C = ["syn","lgd","dmis","lgd/dmis"]
-		self.C = ["syn","lgd","mis","cadd15","cadd20","cadd25","revel.5"]
+		self.C = ["syn","lgd","mis","cadd15","cadd20","cadd25","revel.5","mvp2.85","mpc1","lgd_cadd25"]
 		return
 
 	# compute NHet, NHom, AC and AF of each site, within a population, Write to a VCF file.
@@ -124,7 +124,8 @@ class RecessiveModel:
 				counter = 0
 		return Trios
 	def LoadPedigree(self, PedFil, Samples):
-		PedFil = "/home/local/users/jw/Genetics_Projects/SPARK/spark_genomics/dat/EUR_Fams.ped"
+		#PedFil = "/home/local/users/jw/Genetics_Projects/SPARK/spark_genomics/dat/EUR_Fams.ped"
+		PedFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K_07/recessive/EUR_Fams.ped"
 		Fams = []
 		reader = csv.reader(open(PedFil, 'rt'), delimiter="\t")
 		PreFamID, tmp = None, None
@@ -176,6 +177,26 @@ class RecessiveModel:
 					res[Alt].append(csq)
 		return res
 
+	def search_severe_consequence(self, var_k, Allele_CSQ_dict, Alt):
+		severe_consequence = None
+		severe_trans = None
+		severe_idx = 0
+		for i in range(len(Allele_CSQ_dict[Alt])):
+			consequence = Allele_CSQ_dict[Alt][i]["Consequence"]
+			Transcript = Allele_CSQ_dict[Alt][i]["Feature"]
+			if len(set(consequence).intersection(self.LGD))>= 1:
+				return i, consequence, Transcript
+			elif consequence[0] == "missense_variant":
+				return i, consequence, Transcript
+			elif consequence[0] == "synonymous_variant":
+				severe_consequence == consequence
+				severe_trans = Transcript
+				severe_idx = i
+		if severe_consequence == None:
+			return 0, "non-coding", None
+		else:
+			return 0, severe_consequence, severe_trans
+
 	def Recessive(self, Chr, GenotypeFil, VEPFil, AFFil, GenecodeFil):
 		GenotypeFil = pysam.TabixFile(GenotypeFil)
 		VEPFil = pysam.TabixFile(VEPFil)
@@ -212,6 +233,9 @@ class RecessiveModel:
 				fmt = llist2[8]
 				Sample_genotypes = llist2[9:]
 				infodict = self.getINFO(llist[7])
+				mappability = float(infodict.get("Mappability", 1))
+				if mappability != 1:
+					continue
 				Allele_CSQ_dict = self.match_allele_csq(Ref, Alts, CSQ_header, infodict["CSQ"])
 				for i, Alt in enumerate(Alts.split(",")):
 					var_k = "{}:{}:{}:{}".format(Chr, Pos, Ref, Alt)
@@ -228,7 +252,8 @@ class RecessiveModel:
 						#if max(gnomADg_af, af) > 1e-2 or af == 0:
 						if max(gnomADg_af, af) > self.AF_cutoff or af == 0:
 							continue
-						cons = Allele_CSQ_dict[Alt][0]["Consequence"]
+						# cons = Allele_CSQ_dict[Alt][0]["Consequence"]
+						idx_anno, cons, trans = self.search_severe_consequence(var_k, Allele_CSQ_dict, Alt)
 						#print (cons)
 						if len(set(cons).intersection(self.LGD))>= 1:
 							#print (gnomADe_af, af, cons)
@@ -244,11 +269,18 @@ class RecessiveModel:
 							Gene_Fam_dat = self.AddVar(i, var_k, "cadd20", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
 						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 25:
 							Gene_Fam_dat = self.AddVar(i, var_k, "cadd25", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
-						try:
-							if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["REVEL_score"]) > 0.5:
-								Gene_Fam_dat = self.AddVar(i, var_k, "revel.5", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
-						except ValueError:
-							continue
+						if ("missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 25) or (len(set(cons).intersection(self.LGD))>= 1) :
+							Gene_Fam_dat = self.AddVar(i, var_k, "lgd_cadd25", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
+
+						revel = 0 if Allele_CSQ_dict[Alt][0]["REVEL_score"].split("&")[0] in ["", "."] else float(Allele_CSQ_dict[Alt][0]["REVEL_score"].split("&")[0])
+						mpc = 0 if Allele_CSQ_dict[Alt][0]["MPC_score"].split("&")[0]  in ["", "."]  else float(Allele_CSQ_dict[Alt][0]["MPC_score"].split("&")[0])
+						mvp2 = 0 if Allele_CSQ_dict[Alt][0]["MVP2_rankscore"].split("&")[0] in ["", "."]  else float(Allele_CSQ_dict[Alt][0]["MVP2_rankscore"].split("&")[0])
+						if "missense_variant" in set(cons) and revel > 0.5:
+							Gene_Fam_dat = self.AddVar(i, var_k, "revel.5", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
+						if "missense_variant" in set(cons) and mpc > 1:
+							Gene_Fam_dat = self.AddVar(i, var_k, "mpc1", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
+						if "missense_variant" in set(cons) and mvp2 > 0.85:
+							Gene_Fam_dat = self.AddVar(i, var_k, "mvp2.85", fmt, Sample_genotypes, Trios, Gene_Fam_dat)
 					except KeyError as e:
 						print(e)
 						print("KeyError", Ref, Alts, Alt, Allele_CSQ_dict)
@@ -273,7 +305,11 @@ class RecessiveModel:
 		return
 
 	def AddVar(self, i, var_k, Vartype, fmt, gts, Trios, Gene_Fam_dat):
+		N_mendelian_Error = 0
+		trio_var_pairs = []
 		for j, trio in enumerate(Trios):
+			if N_mendelian_Error >= 2: # drop the site if >2 fam with mendelian error
+				return Gene_Fam_dat
 			prob, fa, mo, sibs = trio.Proband, trio.Father, trio.Mother, trio.Siblings
 			gt_prob, gt_fa, gt_mo = self.GenotypeQC(fmt, gts[prob.index]), self.GenotypeQC(fmt, gts[fa.index]), self.GenotypeQC(fmt, gts[mo.index])
 			gt_sibs = [self.GenotypeQC(fmt, gts[x.index]) for x in sibs]
@@ -288,12 +324,16 @@ class RecessiveModel:
 			if sib_fail_qc:
 				continue
 			elif (gt_prob[0] not in gt_fa or gt_prob[1] not in gt_mo) and (gt_prob[1] not in gt_fa or gt_prob[0] not in gt_mo):
+				N_mendelian_Error += 1
 				continue # Mendelian Error
 			else:
 				gt_prob, gt_fa, gt_mo = self.gt_recode(gt_prob), self.gt_recode(gt_fa), self.gt_recode(gt_mo)
 				gt_sibs = [self.gt_recode(gt) for gt in gt_sibs]
 				#Gene_Fam_dat[trio.FamID][Vartype].append([var_k, gt_prob, gt_fa, gt_mo])
-				Gene_Fam_dat[Vartype][trio.FamID].append([var_k, gt_prob, gt_fa, gt_mo, gt_sibs])
+				#Gene_Fam_dat[Vartype][trio.FamID].append([var_k, gt_prob, gt_fa, gt_mo, gt_sibs])
+				trio_var_pairs.append((trio.FamID, [var_k, gt_prob, gt_fa, gt_mo, gt_sibs]))
+		for FamID, dat in trio_var_pairs:
+			Gene_Fam_dat[Vartype][FamID].append(dat)
 		return Gene_Fam_dat
 	
 	def gt_recode(self, gt):
@@ -397,104 +437,6 @@ class RecessiveModel:
 					N_more_than_three += 1
 			res[t] = (N_hom, N_chet, N_haps, N_cant_phase, cant_phase_fam, N_more_than_three)
 		return res
-
-	def Recessive2(self, Chr, GenotypeFil, VEPFil, AFFil, GenecodeFil):
-		GenotypeFil = pysam.TabixFile(GenotypeFil)
-		VEPFil = pysam.TabixFile(VEPFil)
-		AFFil = pysam.TabixFile(AFFil)
-		Genes, Transtripts = LoadGeneCode(GenecodeFil)
-		CSQ_header = [X.strip().split("Format: ")[1].rstrip('>\"').split("|") for X in VEPFil.header if X.startswith("##INFO=<ID=CSQ")][0]
-		Samples = GenotypeFil.header[-1].split("\t")[9:]
-		OutFil = open("Rec.Chr{}.txt".format(Chr), 'w')
-		OutFil.write("#Gene\t" + "\t".join(["{}.obs\t{}.haps".format(t,t) for t in self.C]) + "\n")
-		Trios = self.LoadPedigree("a", Samples)
-
-		for i, (Gene,GTF) in enumerate(Genes.items()): # iterate through genes
-			Gene_Fam_dat = {}
-			for i,trio in enumerate(Trios):
-				#for cat in ["syn","lgd","mis","cadd15","cadd20","cadd25","revel.5"]:
-				Gene_Fam_dat[trio.FamID] = {}
-				for cat in self.C:
-					Gene_Fam_dat[trio.FamID][cat] = []
-				#Trios[i].pro_haps[lgd/dmis] = [[0,0], [0,0]] # consider lgd/dmis and dmis/lgd seperately and then combine to observed.
-			start, end = int(GTF.start), int(GTF.end)
-			veps, cohort, genotypes = [],[], []
-			for term in VEPFil.fetch(Chr, start, end):
-				veps.append(term)
-			for term in AFFil.fetch(Chr, start, end):
-				cohort.append(term)
-			for term in GenotypeFil.fetch(Chr, start, end):
-				genotypes.append(term)
-			for var in zip(veps, cohort, genotypes):
-				llist = var[0].split("\t")
-				llist2 = var[2].split("\t")
-				Chr, Pos, Ref, Alts = llist[0], llist[1], llist[3], llist[4]
-				cohort_af = list(map(float, self.getINFO(var[1].split("\t")[7])["EUR_AF"].split(",")))
-				fmt = llist2[8]
-				Sample_genotypes = llist2[9:]
-				infodict = self.getINFO(llist[7])
-				Allele_CSQ_dict = self.match_allele_csq(Ref, Alts, CSQ_header, infodict["CSQ"])
-				for i, Alt in enumerate(Alts.split(",")):
-					try:
-						Allele_CSQ_dict[Alt][0]["gnomADg_AF_NFE"] = Allele_CSQ_dict[Alt][0]["gnomADg_AF_NFE"].split("&")[0]
-						Allele_CSQ_dict[Alt][0]["gnomADe_AF_NFE"] = Allele_CSQ_dict[Alt][0]["gnomADe_AF_NFE"].split("&")[0]
-						vep = Allele_CSQ_dict[Alt][0]
-						gnomADg_af = 0 if (vep["gnomADg_AF_NFE"] == "" or vep["gnomADg_AF_NFE"] == ".")\
-								else float(vep["gnomADg_AF_NFE"])
-						gnomADe_af = 0 if (vep["gnomADe_AF_NFE"] == "" or vep["gnomADe_AF_NFE"] == ".")\
-								else float(vep["gnomADe_AF_NFE"])
-						af = cohort_af[i]
-						#if gnomADg_af > 1e-2 or af > 1e-2 or af == 0:
-						#if max(gnomADg_af, af) > 1e-2 or af == 0:
-						if max(gnomADg_af, af) > self.AF_cutoff or af == 0:
-							continue
-						cons = Allele_CSQ_dict[Alt][0]["Consequence"]
-						#print (cons)
-						if len(set(cons).intersection(self.LGD))>= 1:
-							#print (gnomADe_af, af, cons)
-							#self.LookUpBiallic(i, "lgd", fmt, Sample_genotypes, Trios)
-							self.AddVar(i, "lgd", fmt, Sample_genotypes, Trios)
-						if "synonymous_variant" in set(cons):
-							self.AddVar(i, "syn", fmt, Sample_genotypes, Trios)
-						if "missense_variant" in set(cons):
-							self.AddVar(i, "mis", fmt, Sample_genotypes, Trios)
-						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 15:
-							self.AddVar(i, "cadd15", fmt, Sample_genotypes, Trios)
-						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 20:
-							self.AddVar(i, "cadd20", fmt, Sample_genotypes, Trios)
-						if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["CADD_PHRED"]) > 25:
-							self.AddVar(i, "cadd25", fmt, Sample_genotypes, Trios)
-						try:
-							if "missense_variant" in set(cons) and float(Allele_CSQ_dict[Alt][0]["REVEL_score"]) > 0.5:
-								self.AddVar(i, "revel.5", fmt, Sample_genotypes, Trios)
-						except ValueError:
-							continue
-					except KeyError as e:
-						print(e)
-						print("KeyError", Ref, Alts, Alt, Allele_CSQ_dict)
-						return
-					except IndexError:
-						print("IndexError", Ref, Alts, llist[7], Allele_CSQ_dict)
-						return
-			Obs = {}
-			Nhaps = {}
-			for t in self.C:
-				Obs[t] = 0
-				Nhaps[t] = 0
-			for i,trio in enumerate(Trios):
-				for t in self.C:
-					#print(Trios[i].pro_haps[t])
-					if Trios[i].pro_haps[t] == [1,1]:
-						Obs[t] += 1
-					Nhaps[t] += sum(Trios[i].fa_haps[t])
-					Nhaps[t] += sum(Trios[i].mo_haps[t])
-					#else:
-					#	print(Trios[i].pro_haps[t])
-					#if Trios[i].pro_haps[t] == [1,1]:
-					#	Mix += 1
-			#OutFil.write("{}\t{}\t{}\n".format(Gene, "\t".join("{}\t{}".format(Obs[t], Nhaps[t]) for t in self.C), Mix))
-			OutFil.write("{}\t{}\n".format(Gene, "\t".join("{}\t{}".format(Obs[t], Nhaps[t]) for t in self.C)))
-		return
 
 	def LookUpBiallic(self, i, Vartype, fmt, gts, Trios):
 		for j, trio in enumerate(Trios):
@@ -692,11 +634,14 @@ def main():
 	#List = [l.strip() for l in open(args.list)]
 	#ins.ComputeSiteAF(args.vcf, List, "EUR", args.out)
 	Chr = args.chr
-	GenotypeFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K/VCF/TrioVCF/Genotypes/SPARK30K.TrioSamples.Chr{}.vcf.gz".format(Chr)
-	#VEPFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K/VCF/TrioVCF/sites/SPARK30K.TrioSamples.Chr{}.vep.vcf.gz".format(Chr)
-	VEPFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K/VCF/TrioVCF/sites/Annotated2/SPARK30K.TrioSamples.Chr{}.vep.vcf.gz".format(Chr)
-	AFFil = "/home/local/users/jw/Genetics_Projects/SPARK/spark_genomics/dat/SPARK30K.TrioSamples.Chr{}.eurAF.vcf.gz".format(Chr)
+	#GenotypeFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K/VCF/TrioVCF/Genotypes/SPARK30K.TrioSamples.Chr{}.vcf.gz".format(Chr)
+	#VEPFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K/VCF/TrioVCF/sites/SPARK30K.TrioSamples.Chr{}.vep.mappability.vcf.gz".format(Chr)
+	#VEPFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K/VCF/TrioVCF/sites/Annotated2/SPARK30K.TrioSamples.Chr{}.vep.vcf.gz".format(Chr)
+	#AFFil = "/home/local/users/jw/Genetics_Projects/SPARK/spark_genomics/dat/SPARK30K.TrioSamples.Chr{}.eurAF.vcf.gz".format(Chr)
 	genecode = "/home/local/users/jw/vep_data/homo_sapiens/GeneCodeV29/CHRs/genecodev29.{}.gtf".format(Chr)
+	GenotypeFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K_07/VCF/GenotypesSplitbyChr/GATK4_20190729.chr{}.vcf.gz".format(Chr)
+	VEPFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K_07/VCF/SitesSplitbyChr/annotated/GATK4_20190729.chr{}.mappability.vcf.gz".format(Chr)
+	AFFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K_07/recessive/AF/GATK4_20190729.chr{}.eurAF.vcf.gz".format(Chr)
 	ins.Recessive(Chr, GenotypeFil ,VEPFil, AFFil, genecode)
 
 if __name__=='__main__':

@@ -11,7 +11,7 @@ import multiprocessing
 import gzip
 
 class RecessiveModel:
-	def __init__(self, af = 1e-2, SBPV_cutoff=1e-3, DP_cutoff=7, AB_cutoff1=0.2, AB_cutoff2=0.8):
+	def __init__(self, af = 1e-2, SBPV_cutoff=1e-5, DP_cutoff=7, AB_cutoff1=0.2, AB_cutoff2=0.8):
 		self.SBPV_cutoff = SBPV_cutoff
 		self.DP_cutoff = DP_cutoff
 		self.AB_cutoff1 = AB_cutoff1
@@ -89,7 +89,7 @@ class RecessiveModel:
 		GT = tmp["GT"].split("/")
 		if tmp["GQ"] == ".":
 			return False
-		elif float(tmp["GQ"]) < 30:
+		elif float(tmp["GQ"]) < 60:
 			return False
 		if GT[0] == "." or GT[1] == ".":
 			return False
@@ -449,15 +449,15 @@ def GetOptions():
 def main():
 	args = GetOptions()
 	ins = RecessiveModel(args.af)
-	#List = [l.strip() for l in open(args.list)]
-	#ins.ComputeSiteAF(args.vcf, List, "EUR", args.out)
-	Chr = args.chr
-	GenotypeFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K/VCF/TrioVCF/Genotypes/SPARK30K.TrioSamples.Chr{}.vcf.gz".format(Chr)
+	List = [l.strip() for l in open(args.list)]
+	ins.ComputeSiteAF(args.vcf, List, "EUR", args.out)
+	#Chr = args.chr
+	#GenotypeFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K/VCF/TrioVCF/Genotypes/SPARK30K.TrioSamples.Chr{}.vcf.gz".format(Chr)
 	#VEPFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K/VCF/TrioVCF/sites/SPARK30K.TrioSamples.Chr{}.vep.vcf.gz".format(Chr)
-	VEPFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K/VCF/TrioVCF/sites/Annotated2/SPARK30K.TrioSamples.Chr{}.vep.vcf.gz".format(Chr)
-	AFFil = "/home/local/users/jw/Genetics_Projects/SPARK/spark_genomics/dat/SPARK30K.TrioSamples.Chr{}.eurAF.vcf.gz".format(Chr)
-	genecode = "/home/local/users/jw/vep_data/homo_sapiens/GeneCodeV29/CHRs/genecodev29.{}.gtf".format(Chr)
-	ins.Recessive(Chr, GenotypeFil ,VEPFil, AFFil, genecode)
+	#VEPFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K/VCF/TrioVCF/sites/Annotated2/SPARK30K.TrioSamples.Chr{}.vep.vcf.gz".format(Chr)
+	#AFFil = "/home/local/users/jw/Genetics_Projects/SPARK/spark_genomics/dat/SPARK30K.TrioSamples.Chr{}.eurAF.vcf.gz".format(Chr)
+	#genecode = "/home/local/users/jw/vep_data/homo_sapiens/GeneCodeV29/CHRs/genecodev29.{}.gtf".format(Chr)
+	#ins.Recessive(Chr, GenotypeFil ,VEPFil, AFFil, genecode)
 
 if __name__=='__main__':
 	main()
