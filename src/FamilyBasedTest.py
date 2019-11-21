@@ -189,7 +189,7 @@ class RecessiveModel:
 			elif consequence[0] == "missense_variant":
 				return i, consequence, Transcript
 			elif consequence[0] == "synonymous_variant":
-				severe_consequence == consequence
+				severe_consequence = consequence
 				severe_trans = Transcript
 				severe_idx = i
 		if severe_consequence == None:
