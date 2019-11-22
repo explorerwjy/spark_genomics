@@ -88,17 +88,18 @@ class RecessiveModel:
 			tmp[k] = v
 		GT = tmp["GT"].split("/")
 		if tmp["GQ"] == ".":
-			return False
+			#return False
+			return [0,0]
 		elif float(tmp["GQ"]) < 60:
 			return False
 		if GT[0] == "." or GT[1] == ".":
 			return False
 		if tmp["GT"] != "0/0":
 			#print(fmt, gt_dat)
-			if "." in tmp["SBPV"]:
-				pass
-			elif float(tmp["SBPV"]) < self.SBPV_cutoff:
-				return False
+			#if "." in tmp["SBPV"]:
+			#	pass
+			#elif float(tmp["SBPV"]) < self.SBPV_cutoff:
+			#	return False
 			if float(tmp["DP"]) < self.DP_cutoff:
 				return False
 			if float(tmp["AD"].split(",")[1])/float(tmp["DP"]) < self.AB_cutoff1: # or float(tmp["AD"].split(",")[1])/float(tmp["DP"]) > self.AB_cutoff2:
@@ -184,6 +185,9 @@ class RecessiveModel:
 		for i in range(len(Allele_CSQ_dict[Alt])):
 			consequence = Allele_CSQ_dict[Alt][i]["Consequence"]
 			Transcript = Allele_CSQ_dict[Alt][i]["Feature"]
+			#print(Allele_CSQ_dict[Alt][i]["BIOTYPE"])
+			if Allele_CSQ_dict[Alt][i]["BIOTYPE"] != "protein_coding":
+				continue
 			if len(set(consequence).intersection(self.LGD))>= 1:
 				return i, consequence, Transcript
 			elif consequence[0] == "missense_variant":
@@ -197,13 +201,16 @@ class RecessiveModel:
 		else:
 			return 0, severe_consequence, severe_trans
 
-	def Recessive(self, Chr, GenotypeFil, VEPFil, AFFil, GenecodeFil):
+	#def Recessive(self, Chr, GenotypeFil, VEPFil, AFFil, GenecodeFil):
+	def Recessive(self, Chr, GenotypeFil, VEPFil, GenecodeFil):
 		GenotypeFil = pysam.TabixFile(GenotypeFil)
 		VEPFil = pysam.TabixFile(VEPFil)
-		AFFil = pysam.TabixFile(AFFil)
+		#AFFil = pysam.TabixFile(AFFil)
 		Genes, Transtripts = LoadGeneCode(GenecodeFil)
-		CSQ_header = [X.strip().split("Format: ")[1].rstrip('>\"').split("|") for X in VEPFil.header if X.startswith("##INFO=<ID=CSQ")][0]
-		Samples = GenotypeFil.header[-1].split("\t")[9:]
+		#CSQ_header = [X.strip().split("Format: ")[1].rstrip('>\"').split("|") for X in VEPFil.header if X.startswith("##INFO=<ID=CSQ")][0]
+		CSQ_header = [X.strip().split("Format: ")[1].rstrip('>\"').split("|") for X in GenotypeFil.header if X.startswith("##INFO=<ID=CSQ")][0]
+		#Samples = GenotypeFil.header[-1].split("\t")[9:]
+		Samples = VEPFil.header[-1].split("\t")[9:]
 		OutFil = open("Rec.FamTest.Chr{}.txt".format(Chr), 'w')
 		OutFil.write("#Gene\t" + "\t".join(["{}.obs\t{}.haps".format(t,t) for t in self.C]) + "\n")
 		OutFil2 = open("Rec.FamTest.Chr{}.sup.txt".format(Chr), 'w')
@@ -221,15 +228,16 @@ class RecessiveModel:
 			veps, cohort, genotypes = [],[], []
 			for term in VEPFil.fetch(Chr, start, end):
 				veps.append(term)
-			for term in AFFil.fetch(Chr, start, end):
-				cohort.append(term)
+			#for term in AFFil.fetch(Chr, start, end):
+			#	cohort.append(term)
 			for term in GenotypeFil.fetch(Chr, start, end):
 				genotypes.append(term)
-			for var in zip(veps, cohort, genotypes):
+			#for var in zip(veps, cohort, genotypes):
+			for var in zip(veps, genotypes):
 				llist = var[0].split("\t")
-				llist2 = var[2].split("\t")
+				llist2 = var[1].split("\t")
 				Chr, Pos, Ref, Alts = llist[0], llist[1], llist[3], llist[4]
-				cohort_af = list(map(float, self.getINFO(var[1].split("\t")[7])["EUR_AF"].split(",")))
+				#cohort_af = list(map(float, self.getINFO(var[1].split("\t")[7])["EUR_AF"].split(",")))
 				fmt = llist2[8]
 				Sample_genotypes = llist2[9:]
 				infodict = self.getINFO(llist[7])
@@ -247,10 +255,11 @@ class RecessiveModel:
 								else float(vep["gnomADg_AF_NFE"])
 						gnomADe_af = 0 if (vep["gnomADe_AF_NFE"] == "" or vep["gnomADe_AF_NFE"] == ".")\
 								else float(vep["gnomADe_AF_NFE"])
-						af = cohort_af[i]
+						#af = cohort_af[i]
 						#if gnomADg_af > 1e-2 or af > 1e-2 or af == 0:
 						#if max(gnomADg_af, af) > 1e-2 or af == 0:
-						if max(gnomADg_af, af) > self.AF_cutoff or af == 0:
+						#if max(gnomADg_af, af) > self.AF_cutoff or af == 0:
+						if gnomADg_af > self.AF_cutoff:
 							continue
 						# cons = Allele_CSQ_dict[Alt][0]["Consequence"]
 						idx_anno, cons, trans = self.search_severe_consequence(var_k, Allele_CSQ_dict, Alt)
@@ -621,8 +630,8 @@ def GetOptions():
 	#parser.add_argument("-v", "--vcf", type=str, required=True, help="<Required> VCF file")
 	#parser.add_argument("-l", "--list", type=str, required=True, help="<Required> Indv List file")
 	#parser.add_argument("-o", "--out", type=str, help="<Required> Output VCF file")
-	parser.add_argument("--chr", type=str, help="<Required> Output VCF file")
-	parser.add_argument("--af", type=float, help="<Required> Output VCF file")
+	parser.add_argument("--chr", required=True, type=str, help="<Required> Chromosome")
+	parser.add_argument("--af", default=1e-2, type=float, help="<Required> MAF cutoff")
 	args = parser.parse_args()
 	#if args.out == None:
 	#	args.out = "test.out.vcf"
@@ -639,10 +648,13 @@ def main():
 	#VEPFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K/VCF/TrioVCF/sites/Annotated2/SPARK30K.TrioSamples.Chr{}.vep.vcf.gz".format(Chr)
 	#AFFil = "/home/local/users/jw/Genetics_Projects/SPARK/spark_genomics/dat/SPARK30K.TrioSamples.Chr{}.eurAF.vcf.gz".format(Chr)
 	genecode = "/home/local/users/jw/vep_data/homo_sapiens/GeneCodeV29/CHRs/genecodev29.{}.gtf".format(Chr)
-	GenotypeFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K_07/VCF/GenotypesSplitbyChr/GATK4_20190729.chr{}.vcf.gz".format(Chr)
-	VEPFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K_07/VCF/SitesSplitbyChr/annotated/GATK4_20190729.chr{}.mappability.vcf.gz".format(Chr)
-	AFFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K_07/recessive/AF/GATK4_20190729.chr{}.eurAF.vcf.gz".format(Chr)
-	ins.Recessive(Chr, GenotypeFil ,VEPFil, AFFil, genecode)
+	#GenotypeFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K_07/VCF/GenotypesSplitbyChr/GATK4_20190729.chr{}.vcf.gz".format(Chr)
+	#VEPFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K_07/VCF/SitesSplitbyChr/annotated/GATK4_20190729.chr{}.mappability.vcf.gz".format(Chr)
+	GenotypeFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K_07/VCF/Filt/SPARK30K.Genotypes.Filt.Chr{}.vcf.gz".format(Chr)
+	VEPFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K_07/VCF/Filt/SPARK30K.Anno.Filt.Chr{}.vcf.gz".format(Chr)
+	#AFFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K_07/recessive/AF/GATK4_20190729.chr{}.eurAF.vcf.gz".format(Chr)
+	#ins.Recessive(Chr, GenotypeFil ,VEPFil, AFFil, genecode)
+	ins.Recessive(Chr, GenotypeFil ,VEPFil, genecode)
 
 if __name__=='__main__':
 	main()

@@ -196,13 +196,13 @@ class RecessiveModel:
 		# Skip Header Genotype
 		while 1:
 			l = GenotypeFil.readline()#.decode("utf-8")
-			OutFil1.write(l)
+			OutFil2.write(l)
 			if l.decode("utf-8").startswith("#C"):
 				break
 		# Skip Header VEP 
 		while 1:
 			l = VEPFil.readline()
-			OutFil2.write(l)
+			OutFil1.write(l)
 			if l.decode("utf-8").startswith("##INFO=<ID=CSQ"):
 				CSQ_header = l.decode("utf-8").split("Format: ")[1].rstrip('>\"').split("|")
 			if l.decode("utf-8").startswith("#C"):
