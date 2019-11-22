@@ -11,11 +11,13 @@ import multiprocessing
 import gzip
 
 class RecessiveModel:
-	def __init__(self, af = 1e-2, SBPV_cutoff=1e-5, DP_cutoff=7, AB_cutoff1=0.2, AB_cutoff2=0.8):
+	def __init__(self, af = 1e-2, DeepVariant = True, SBPV_cutoff=1e-5, DP_cutoff=7, AB_cutoff1=0.2, AB_cutoff2=0.8):
 		self.SBPV_cutoff = SBPV_cutoff
-		self.DP_cutoff = DP_cutoff
-		self.AB_cutoff1 = AB_cutoff1
-		self.AB_cutoff2 = AB_cutoff2
+		self.DP_cutoff_T1 = DP_cutoff
+		self.AB_cutoff1_T1 = AB_cutoff1
+		self.AB_cutoff2_T1 = AB_cutoff2
+		self.DP_cutoff_T2 = 20
+		self.AB_cutoff_T2 = 0.3
 		self.LGD = set(["splice_acceptor_variant", "splice_donor_variant", "stop_gained", 
 			"stop_lost", "start_lost", "frameshift_variant"])
 		self.CADD_cutoff = 25
@@ -23,6 +25,7 @@ class RecessiveModel:
 		self.AF_cutoff = af
 		#self.C = ["syn","lgd","dmis","lgd/dmis"]
 		self.C = ["syn","lgd","mis","cadd15","cadd20","cadd25","revel.5","mvp2.85","mpc1","lgd_cadd25"]
+		self.DeepVariantFilter = DeepVariant
 		return
 
 	# compute NHet, NHom, AC and AF of each site, within a population, Write to a VCF file.
@@ -81,8 +84,58 @@ class RecessiveModel:
 				continue
 		return res
 
+	def isRef(self, GT):
+		if GT[0] == GT[1] and GT[0] == 0:
+			return True
+		else:
+			return False
+
+	def isHet(self, GT):
+		if GT[0] == 0:
+			return True
+		else:
+			return False
+
+	def isHom(self, GT):
+		if GT[0] != 0 and GT[1] != 0:
+			return True
+		else:
+			return False
+
 	# Return genotype as [A1, A2] if pass QC , return False otherwise
-	def GenotypeQC(self, fmt, gt_dat):
+	def GenotypeQC(self, SPID, fmt, gt_dat):
+		# Part I: result of GATK filter; Part II: result of DeepVariant Filter
+		FLAG_TIER0 = 0; FLAG_TIER1 = 0; FLAG_TIER2 = 0
+		tmp = {}
+		for k,v in zip(fmt.split(":"), gt_dat.split(":")):
+			tmp[k] = v
+		GT = tmp["GT"].split("/")
+		if GT[0] != "." and GT[1] != ".":
+			GT = [int(i) for i in GT]
+		else: # Missing GT
+			print("Missing GT (GT)", gt_dat)
+			return None, None
+		if tmp["GQ"] == ".":
+			#return False
+			print("Missing GT (GQ)", gt_dat)
+			return [0,0], None
+		#elif float(tmp["GQ"]) < 60:
+		#	return False
+		#if GT[0] == "." or GT[1] == ".":
+		#	return False
+		if tmp["GT"] != "0/0":
+			if self.isHet(GT):
+				if float(tmp["DP"]) < self.DP_cutoff:
+					return False
+				if float(tmp["AD"].split(",")[1])/float(tmp["DP"]) < self.AB_cutoff1: # or float(tmp["AD"].split(",")[1])/float(tmp["DP"]) > self.AB_cutoff2:
+					return False
+			else:
+				if not self.isHom(GT):
+					print('Error detect Hom', GT, gt_dat)
+		else:
+			return GT, True
+
+	def GenotypeQC_old(self, fmt, gt_dat):
 		tmp = {}
 		for k,v in zip(fmt.split(":"), gt_dat.split(":")):
 			tmp[k] = v
@@ -128,11 +181,13 @@ class RecessiveModel:
 		#PedFil = "/home/local/users/jw/Genetics_Projects/SPARK/spark_genomics/dat/EUR_Fams.ped"
 		PedFil = "/home/local/users/jw/Genetics_Projects/SPARK/30K_07/recessive/EUR_Fams.ped"
 		Fams = []
+		Indvs = []
 		reader = csv.reader(open(PedFil, 'rt'), delimiter="\t")
 		PreFamID, tmp = None, None
 		for row in reader:
 			row.append(Samples.index(row[1])) # Add sample index in VCF header, to locate genotype
 			FamID = row[0]
+			Indvs.append(row[1])
 			if FamID != PreFamID:
 				if tmp != None:
 					Fams.append(tmp)
@@ -146,7 +201,8 @@ class RecessiveModel:
 					tmp.Mother = Sample(row)
 				else:
 					tmp.Siblings.append(Sample(row))
-		return Fams
+		Indvs = set(Indvs)
+		return Fams, Indvs
 
 	def getINFO(self, info_string):
 		infolist = info_string.split(';')
@@ -217,7 +273,8 @@ class RecessiveModel:
 		OutFil2.write("#Gene\t" + "\t".join(["{}.NCantPhase\t{}.CantPhaseFams\t{}.N3vars".format(t,t,t) for t in self.C]) + "\n")
 		#OutFil2.write("{}\t{}\t{}\n".format(Gene, "\t".join("{}\t{}\t{}".format(CantPhase[t], CantPhase_fams[t], MoreThanThree[t]) for t in self.C)))
 		Trios = self.LoadPedigree("a", Samples)
-
+		if self.DeepVariantFilter:
+			self.DeepVarTBX = LoadDeepVar(Samples)
 		for i, (Gene,GTF) in enumerate(Genes.items()): # iterate through genes
 			Gene_Fam_dat = {} # store genotypes for each fam, group by variant categories
 			for cat in self.C:
@@ -320,8 +377,10 @@ class RecessiveModel:
 			if N_mendelian_Error >= 2: # drop the site if >2 fam with mendelian error
 				return Gene_Fam_dat
 			prob, fa, mo, sibs = trio.Proband, trio.Father, trio.Mother, trio.Siblings
+
 			gt_prob, gt_fa, gt_mo = self.GenotypeQC(fmt, gts[prob.index]), self.GenotypeQC(fmt, gts[fa.index]), self.GenotypeQC(fmt, gts[mo.index])
 			gt_sibs = [self.GenotypeQC(fmt, gts[x.index]) for x in sibs]
+
 			if gt_prob == False or gt_fa == False or gt_mo == False: 
 				continue # Failed QC
 			elif ( (gt_prob[1] not in [0, i+1]) or (gt_fa[1] not in [0, i+1]) or (gt_mo[1] not in [0, i+1]) ) or (gt_prob[1] == 0 and gt_fa[1] == 0 and gt_mo[1] == 0):
@@ -624,7 +683,17 @@ def LoadGeneCode(genecodefil):
 				Transcripts[info["gene_name"]] = []
 			Transcripts[info["gene_name"]].append(GTFRecord(llist[0], llist[1], llist[2], llist[3], llist[4], llist[6], info))
 	return Genes, Transcripts 
-# 
+#
+def LoadDeepVar(SPLIST):
+	DeepVarFil = open("/home/local/users/jw/Genetics_Projects/SPARK/30K_07/VCF/DeepVariant/SPID2DV.txt", 'rt')
+	Dict = {}
+	for l in DeepVarFil:
+		SPID, FILE = l.strip().split(",")
+		if SPID in SPLIST:
+			#print(FILE)
+			Dict[SPID] = pysam.TabixFile(FILE) #FILE
+	return Dict
+
 def GetOptions():
 	parser = argparse.ArgumentParser()
 	#parser.add_argument("-v", "--vcf", type=str, required=True, help="<Required> VCF file")
